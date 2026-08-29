@@ -1,0 +1,12 @@
+# Godot
+.godot/
+.import/
+export.cfg
+export_presets.cfg
+
+# Build output
+build/
+*.tmp
+
+# Movie-maker frame dumps
+.movie/

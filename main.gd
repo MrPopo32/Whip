@@ -130,6 +130,7 @@ var a_minth := PackedFloat32Array()   # weakest theta seen during the settle
 # included, is spooled onto the beam (measured: 24 of 26 particles).
 var a_lastth := PackedFloat32Array()  # |theta| last tick, to see winding grow
 var a_shed := PackedInt32Array()      # timer for shedding an over-wound coil
+var a_prun := PackedInt32Array()      # consecutive ticks this wrap has pinched
 var a_wlo := PackedInt32Array()
 var a_whi := PackedInt32Array()
 const PAYOUT_TICKS := 8               # one segment pays through per interval
@@ -175,6 +176,7 @@ var crack_flash := 0.0
 var slipping := false
 var grounded := false          # body resting on terrain this tick
 var tick_count := 0
+var grip_edge := -999                 # tick the hand last closed
 var run_ticks := 0
 var finished := false
 var falls := 0
@@ -215,6 +217,21 @@ const COIL_RATE := 0.10               # m/s cap on how fast winding may eat
 const COIL_EXCESS := 1.5              # rad past th_full before a coil sheds
 const PINCH_RAD := 0.10               # m: how close to the beam a self-crossing
                                       # has to be to count as a pinch
+const PINCH_TURN := 0.75              # turns of chain that must lie between the
+                                      # two crossing strands for it to be a real
+                                      # riding turn rather than a tail kink
+const PINCH_RUN := 2                  # consecutive ticks pinched before locking
+const LOCK_WINDOW := 30               # ticks a catch has to produce a pinch
+# GRIP IS A TRIGGER, NOT A LATCH. A wrap can only be caught in the moments
+# after you CLOSE your hand - not at any time while it happens to be closed.
+# Holding the button down used to let the simulation choose the instant of
+# engagement itself, which is an auto-catch: the button armed it, the machine
+# fired it. Measured, that handed over 78% of all available locks for no
+# timing at all, and stretched a 100 ms physical window into a 1900 ms one.
+# Closing your hand IS the act of catching - which is also why you can no
+# longer collect beams by accident while hanging on to another one.
+const GRIP_WINDOW := 15               # ticks after closing your hand in which
+                                      # a wrap can take (250 ms)
 const COIL_SHED_TICKS := 6            # how fast an over-wound coil pays out
 var pin_min_idx := 3                  # earliest chain index that may hold a wrap
 var anchor_mu := 0.40                 # chain friction on a beam BEFORE a wrap
@@ -248,10 +265,10 @@ func _ready() -> void:
 	hud.position = Vector2(16, 12)
 	hud.add_theme_font_size_override("font_size", 17)
 	hud.add_theme_color_override("font_color", Color(0.85, 0.87, 0.92))
-	hud.text = "THE WHIP  |  mouse: move handle   HOLD Space or LMB: grip TAUT   R: restart\nyou hang only while you GRIP - let go and the rope runs through your hand\na FULL turn locks (green arc); less than that catches, then betrays (amber)\nthe tether is fixed where you CATCH it - catch far, swing bigger, fly further\nCOIL TEST: press 1 = winding eats rope,  3 = 1 + over-coil sheds,  0 = off"
+	hud.text = "THE WHIP  |  mouse: move handle   R: restart\nSPACE / LMB = CLOSE YOUR HAND on the rope. It is a grip, not a stiffener:\na wrap only takes in the moment you close it, and only holds while you hold.\ngreen ring = the rope has crossed itself and will hold. amber = it will betray.\nthe tether is fixed where you CATCH it - catch far, swing bigger, fly further"
 	canvas.add_child(hud)
 	status = Label.new()
-	status.position = Vector2(16, 64)
+	status.position = Vector2(16, 146)
 	status.add_theme_font_size_override("font_size", 16)
 	status.add_theme_color_override("font_color", Color(0.62, 0.66, 0.74))
 	canvas.add_child(status)
@@ -281,6 +298,7 @@ func clear_anchors() -> void:
 		a_armed[k] = 1
 		a_lastth[k] = 0.0
 		a_shed[k] = 0
+		a_prun[k] = 0
 		a_pin0[k] = -1
 		a_pend[k] = 0
 		a_ength[k] = 0.0
@@ -393,6 +411,7 @@ func _build_level() -> void:
 		a_whi.append(0)
 		a_lastth.append(0.0)
 		a_shed.append(0)
+		a_prun.append(0)
 
 func _reset() -> void:
 	pos.resize(NP); prv.resize(NP)
@@ -480,6 +499,8 @@ func _process(_d: float) -> void:
 
 # ---------------------------------------------------------------- sim tick --
 func step_tick(cursor_world_m: Vector2, grip: bool) -> void:
+	if grip and not taut:
+		grip_edge = tick_count        # the hand just closed: this is the catch
 	taut = grip
 	cursor_m = cursor_world_m
 	target_m = body_pos + (cursor_m - body_pos).limit_length(REACH)
@@ -821,12 +842,23 @@ func _pinch(k: int) -> bool:
 	for i in range(NP - 1):
 		if pos[i].distance_to(c) < near or pos[i + 1].distance_to(c) < near:
 			idx.append(i)
+	# Winding of the chain BETWEEN the two crossing strands is what separates a
+	# real riding turn from a hairpin kink in the tail: measured, turns carry
+	# 0.81-1.11 of a turn between strands and kinks carry 0.01-0.27, a clean
+	# gulf. Chain-index distance cannot do it - a turn is ~11 segments round a
+	# fat beam but only 3-4 round a thin one, so any fixed index gap both
+	# admits fat-beam kinks and rejects thin-beam turns.
+	var wind := PackedFloat32Array()
+	wind.resize(NP)
+	wind[0] = 0.0
+	for i in range(NP - 1):
+		wind[i + 1] = wind[i] + (pos[i] - c).angle_to(pos[i + 1] - c)
 	var lim: float = a_r[k] + PINCH_RAD
 	for ai in idx.size():
 		for bi in range(ai + 1, idx.size()):
 			var i: int = idx[ai]
 			var j: int = idx[bi]
-			if j - i < 3:
+			if absf(wind[j] - wind[i]) < PINCH_TURN * TAU:
 				continue
 			var x := _seg_cross(pos[i], pos[i + 1], pos[j], pos[j + 1])
 			if x.x == INF:
@@ -843,7 +875,7 @@ func _update_locks() -> void:
 		if not engaged:
 			if th < th_rel:
 				a_armed[k] = 1        # fully unwound: this anchor can catch again
-			if taut and th >= th_part and a_lockidx[k] >= pin_min_idx 					and a_armed[k] == 1:
+			if taut and tick_count - grip_edge <= GRIP_WINDOW and th >= th_part and a_lockidx[k] >= pin_min_idx and a_armed[k] == 1:
 				# engage: pin the rope's material point at the anchor, tether
 				# at the CURRENT distance -> no snap on catch
 				var li := a_lockidx[k]
@@ -859,6 +891,7 @@ func _update_locks() -> void:
 				a_minth[k] = th
 				a_lastth[k] = th
 				a_shed[k] = 0
+				a_prun[k] = 0
 				# snapshot which chain is in this wrap, as offsets from the pin
 				var wlo := li
 				var whi := li
@@ -916,12 +949,22 @@ func _update_locks() -> void:
 				# used to exceed the entire partial-to-locked gap - so most
 				# locks were manufactured after the throw was already over.
 				# Min also refuses a lock won by a one-tick transient spike.
+				# Watch for the pinch over a WINDOW rather than sampling once.
+				# Engagement fires while the whip is still landing, but the
+				# crossing arrives anywhere from 0 to 20 ticks later, so a
+				# single sample at tick 6 permanently misjudged 43% of
+				# partials - wraps that really had crossed, sustained for up
+				# to 32 ticks, paid out anyway. Only a real crossing can flip
+				# the verdict, so this cannot reopen the theta-creep defect
+				# that the no-upgrade rule guards against.
 				a_pend[k] += 1
 				a_minth[k] = minf(a_minth[k], th)
-				if a_pend[k] >= CLASSIFY_TICKS:
-					# LOCKED means the chain is pinched against the beam by
-					# its own standing part, not that a number got large
-					a_locked[k] = 1 if _pinch(k) else 0
+				a_prun[k] = a_prun[k] + 1 if _pinch(k) else 0
+				if a_prun[k] >= PINCH_RUN:
+					a_locked[k] = 1
+					a_ength[k] = a_minth[k]
+				elif a_pend[k] >= LOCK_WINDOW:
+					a_locked[k] = 0
 					a_ength[k] = a_minth[k]
 				continue
 			# NO upgrade path. A partial used to be able to become locked if
@@ -1023,10 +1066,21 @@ func _draw() -> void:
 		draw_circle(c, r * 0.55, Color(0.4, 0.35, 0.28))
 		var th := absf(a_theta[k])
 		if th > 0.3:
-			var locked := a_freelen[k] >= 0.0 and a_locked[k] == 1
-			var col := Color(0.95, 0.75, 0.2) if not locked \
-				else Color(0.3, 0.9, 0.45)
+			# Three states, three readings - the amber ring used to mean all of
+			# "merely touching", "caught but will betray" and "pending" at once,
+			# so a wrap that was about to hold looked exactly like one that never
+			# would.
+			var engaged := a_freelen[k] >= 0.0
+			var locked := engaged and a_locked[k] == 1
+			var col := Color(0.55, 0.55, 0.60)              # merely touching
+			if locked:
+				col = Color(0.3, 0.9, 0.45)                 # pinched: it holds
+			elif engaged:
+				col = Color(0.95, 0.75, 0.2)                # caught, not pinched
 			draw_arc(c, r + 8.0, -PI / 2.0, -PI / 2.0 + th, 24, col, 3.0)
+			if engaged and not locked and slipping:
+				draw_arc(c, r + 13.0, -PI / 2.0, -PI / 2.0 + th, 24,
+					Color(0.95, 0.35, 0.2, 0.8), 2.0)
 			for h in range(1, int(th / PI) + 1):
 				var ang := -PI / 2.0 + PI * h
 				draw_circle(c + Vector2.from_angle(ang) * (r + 8.0), 4.0, col)
@@ -1050,6 +1104,18 @@ func _draw() -> void:
 	draw_circle(bp + Vector2(11, -4), 2.2, Color(0.15, 0.15, 0.18))
 	# arm hint: body -> handle
 	draw_line(bp, pos[0] * PPM, Color(0.85, 0.82, 0.75, 0.5), 3.0)
+
+	# THE HAND. Grip is a clamp, not rigidity, so draw a fist closing on the
+	# rope - and flash it as it closes, because that instant is now the catch.
+	var hp := pos[0] * PPM
+	if taut:
+		var fresh := clampf(1.0 - float(tick_count - grip_edge) / float(GRIP_WINDOW), 0.0, 1.0)
+		draw_circle(hp, 9.0, Color(0.95, 0.45, 0.25))
+		if fresh > 0.0:
+			draw_arc(hp, 11.0 + 9.0 * (1.0 - fresh), 0.0, TAU, 20,
+				Color(1.0, 0.85, 0.4, fresh * 0.9), 2.0)
+	else:
+		draw_arc(hp, 9.0, 0.6, TAU - 0.6, 16, Color(0.80, 0.76, 0.66), 2.5)
 
 	# hand target crosshair (your own input state, not a prediction)
 	var tp := target_m * PPM

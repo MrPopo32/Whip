@@ -133,7 +133,13 @@ var a_shed := PackedInt32Array()      # timer for shedding an over-wound coil
 var a_prun := PackedInt32Array()      # consecutive ticks this wrap has pinched
 var a_wlo := PackedInt32Array()
 var a_whi := PackedInt32Array()
-const PAYOUT_TICKS := 8               # one segment pays through per interval
+const PAYOUT_TICKS := 15              # one segment pays through per interval.
+                                      # Raised from 8 when the pin re-seat
+                                      # landed: re-seating removes the wasted
+                                      # teleport, which shortened the visible
+                                      # betrayal from 56 to 39 ticks. This
+                                      # restores it - the betrayal has to be
+                                      # long enough to read as losing.
 # A capstan holds only if there is tension on BOTH sides of the wrap. Your hand
 # supplies the standing-side tension - that is what gripping IS. Let go and the
 # rope simply runs through your hand, the wrap unwinds, and you fall. This is
@@ -141,7 +147,11 @@ const PAYOUT_TICKS := 8               # one segment pays through per interval
 # cannot bear you, taut bears you and cannot shape. Without it the rope is
 # inextensible in both modes, a wrap holds whether or not you grip, and the
 # grip button is decorative.
-const SLACK_PAYOUT_TICKS := 2         # ungripped wraps run out fast
+const SLACK_PAYOUT_TICKS := 3         # ungripped wraps run out fast. NOT 2:
+                                      # an advance every 2 ticks is 30 Hz,
+                                      # exactly the tick Nyquist, so the
+                                      # ratchet strobes rather than reads as
+                                      # motion - and it fires on every dismount.
 const TAIL_MIN := 1                   # tail segments that must remain past the
                                       # pin. A real thrown catch lands its pin
                                       # at material index 19-24, so TAIL_MIN=5
@@ -1011,6 +1021,14 @@ func _advance_pin(k: int) -> void:
 		a_armed[k] = 0            # must fully unwind before it can catch again
 	else:
 		a_pinidx[k] = old + 1
+		# RE-SEAT the pin point under the newly pinned material. Handing the
+		# pin to the next index while leaving a_pinpt where it was made
+		# _solve_lra drag that particle a whole segment - 0.21 m inside one
+		# 1 ms substep, an implied 202 m/s - onto the place the previous
+		# material used to occupy. The rope sweeps answered with a convulsion
+		# that ran down the tail and cracked the tip: measured as an 82-94 px
+		# single-frame jump, and seen as the rope twitching on its own.
+		a_pinpt[k] = a_pos[k] + (pos[old + 1] - a_pos[k]).normalized() 			* (a_r[k] + p_rad[old + 1])
 		a_freelen[k] = minf(a_freelen[k] + rest[old], cum_len[old + 1])
 
 func _events() -> void:

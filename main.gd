@@ -134,6 +134,16 @@ var a_minth := PackedFloat32Array()   # weakest theta seen during the settle
 var a_lastth := PackedFloat32Array()  # |theta| last tick, to see winding grow
 var a_shed := PackedInt32Array()      # timer for shedding an over-wound coil
 var a_prun := PackedInt32Array()      # consecutive ticks this wrap has pinched
+# The last tick this beam's geometry passed the catch test. a_theta is not a
+# smooth measurement - it is a count of segments with BOTH ends inside a 4 mm
+# shell, times a constant, sampled once per tick, on a rope whose standoff
+# wanders between 4 and 15 mm. It chatters violently: one wrap that never left
+# the beam, with true winding rising 2.79 -> 6.46 rad, reported 3.63 -> 0.88 ->
+# 4.18, and on a thin beam it read 0.00 for four straight ticks while hooked
+# with 3.2-3.8 rad on it. So a press could land on a dead tick with the rope
+# plainly wrapped and get nothing - 24% of throws that wrapped caught nothing
+# at a 200 ms reaction, and it got WORSE the slower the player was.
+var a_qtick := PackedInt32Array()
 var a_wlo := PackedInt32Array()
 var a_whi := PackedInt32Array()
 const PAYOUT_TICKS := 15              # one segment pays through per interval.
@@ -307,6 +317,7 @@ func clear_anchors() -> void:
 		a_lastth[k] = 0.0
 		a_shed[k] = 0
 		a_prun[k] = 0
+		a_qtick[k] = -999
 		a_pin0[k] = -1
 		a_pend[k] = 0
 		a_ength[k] = 0.0
@@ -407,6 +418,7 @@ func _build_level() -> void:
 		a_lastth.append(0.0)
 		a_shed.append(0)
 		a_prun.append(0)
+		a_qtick.append(-999)
 
 func _reset() -> void:
 	pos.resize(NP); prv.resize(NP)
@@ -867,10 +879,27 @@ func _update_locks() -> void:
 	for k in a_pos.size():
 		var th := absf(a_theta[k])
 		var engaged := a_freelen[k] >= 0.0
+		# Remember when the geometry last qualified, and forget it the moment
+		# the wrap would have RELEASED had it been held (the file's own release
+		# rule, reused). This does not widen what qualifies - it is only ever
+		# written on a tick that already passes the unchanged test.
+		if th >= th_part and a_lockidx[k] >= pin_min_idx:
+			a_qtick[k] = tick_count
+		elif th < th_rel and not _pinch(k):
+			a_qtick[k] = -999
 		if not engaged:
 			if th < th_rel:
 				a_armed[k] = 1        # fully unwound: this anchor can catch again
-			if taut and tick_count - grip_edge <= GRIP_WINDOW and th >= th_part and a_lockidx[k] >= pin_min_idx and a_armed[k] == 1:
+			# The window now looks BACK as far as it already looks forward: a
+			# press takes a wrap that qualified moments ago and has not released
+			# since. Nothing about the INPUT is stored - the press is consumed
+			# where it happens; what is stored is a fact about the ROPE. Of the
+			# two directions the FORWARD one is the more buffer-like, since it
+			# holds your press live and lets the sim pick the instant. A
+			# self-crossing also qualifies: _pinch is this file's own definition
+			# of a wrap that can hold a body, and it is STRICTER evidence than
+			# th_part, not looser.
+			if taut and tick_count - grip_edge <= GRIP_WINDOW and a_armed[k] == 1 and a_lockidx[k] >= pin_min_idx and (th >= th_part or _pinch(k) or tick_count - a_qtick[k] <= GRIP_WINDOW):
 				# engage: pin the rope's material point at the anchor, tether
 				# at the CURRENT distance -> no snap on catch
 				var li := a_lockidx[k]

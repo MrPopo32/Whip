@@ -52,6 +52,10 @@ var wrap_shell := 0.004               # m: contact shell for counting winding.
                                       # a straight hanging leg keep counting past
                                       # the tangent point, which is what lifted a
                                       # mere fold from pi to over 4 rad.
+var wrap_near := 0.30                 # m past the surface: winding measured
+                                      # about a beam the rope is nowhere near
+                                      # is not a wrap ON it. The same outer
+                                      # band the old contact rule used.
 var th_part := 3.4                    # rad: a catch engages. MUST sit above
                                       # the fold ceiling - a chain merely
                                       # creased over a beam turns through pi
@@ -134,16 +138,6 @@ var a_minth := PackedFloat32Array()   # weakest theta seen during the settle
 var a_lastth := PackedFloat32Array()  # |theta| last tick, to see winding grow
 var a_shed := PackedInt32Array()      # timer for shedding an over-wound coil
 var a_prun := PackedInt32Array()      # consecutive ticks this wrap has pinched
-# The last tick this beam's geometry passed the catch test. a_theta is not a
-# smooth measurement - it is a count of segments with BOTH ends inside a 4 mm
-# shell, times a constant, sampled once per tick, on a rope whose standoff
-# wanders between 4 and 15 mm. It chatters violently: one wrap that never left
-# the beam, with true winding rising 2.79 -> 6.46 rad, reported 3.63 -> 0.88 ->
-# 4.18, and on a thin beam it read 0.00 for four straight ticks while hooked
-# with 3.2-3.8 rad on it. So a press could land on a dead tick with the rope
-# plainly wrapped and get nothing - 24% of throws that wrapped caught nothing
-# at a 200 ms reaction, and it got WORSE the slower the player was.
-var a_qtick := PackedInt32Array()
 var a_wlo := PackedInt32Array()
 var a_whi := PackedInt32Array()
 const PAYOUT_TICKS := 15              # one segment pays through per interval.
@@ -317,7 +311,6 @@ func clear_anchors() -> void:
 		a_lastth[k] = 0.0
 		a_shed[k] = 0
 		a_prun[k] = 0
-		a_qtick[k] = -999
 		a_pin0[k] = -1
 		a_pend[k] = 0
 		a_ength[k] = 0.0
@@ -418,7 +411,6 @@ func _build_level() -> void:
 		a_lastth.append(0.0)
 		a_shed.append(0)
 		a_prun.append(0)
-		a_qtick.append(-999)
 
 func _reset() -> void:
 	pos.resize(NP); prv.resize(NP)
@@ -792,33 +784,86 @@ func _collide_body() -> void:
 
 # ------------------------------------------------------------- wrap logic --
 func _measure_wraps() -> void:
-	# winding angle of the chain polyline around each anchor, gated to
-	# vertices near the surface. Measured fresh every tick from geometry.
+	# THE TAUT WRAP ANGLE. Pull the chain tight without letting it pass through
+	# the beam. The plane minus a disc has fundamental group Z, so the taut
+	# path in the chain's own homotopy class is unique - tangent leg, arc,
+	# tangent leg - and its ARC is the only winding that survives pulling. That
+	# arc is the angle a capstan is written in, and it is what this measures:
+	#
+	#     theta = |PHI| - acos(r / d_handle) - acos(r / d_tip)
+	#
+	# with PHI the lifted winding of the whole chain about the beam centre,
+	# summed with angle_to, which is the exact continuous lift.
+	#
+	# It replaces a COUNT of chain segments with both endpoints inside a 4 mm
+	# shell, times a constant. Every number below is measured against ground
+	# truth over 576 thrown wraps - tests/jb2/feat_dump.gd collects it,
+	# tests/jb2/score.py scores it, tests/jb2/closed_loop.gd audits the whole
+	# loop with the hand actually closing.
+	#
+	#  - THE COUNT CHATTERS. It moves 0.47 rad in an average tick while the
+	#    rope is wrapped, and up to 5.25 rad in one tick. On a wrap rigged so
+	#    it CANNOT change (tests/orc_valid.gd) it ranges over 1.88 to 7.47 rad
+	#    while the geometry is frozen; this reads 0.000 rad of movement on
+	#    that same wrap, and 0.18 rad in an average thrown tick.
+	#  - THE COUNT GOES BLIND. It is silent on 327 of 3606 wrapped ticks, in
+	#    unbroken runs of up to 17 ticks - longer than the entire 15-tick
+	#    press window. Two of the 106 wrapped throws had no press window at
+	#    all and four had a hole in the middle of one. This has no blind tick
+	#    anywhere and no holes: all 106 get one unbroken window.
+	#  - AND THE COUNT OVER-READS, which is the worse half, because it is the
+	#    half that catches you on nothing. It fires on 635 ticks where the
+	#    rope is not wrapped - 64% of all its firings on a 0.24 m beam - it
+	#    lets 27 throws that never wrap at all be caught anyway, and it
+	#    catches a LIMP DRAPE on every beam radius in the level
+	#    (tests/jb2/refusal_stress2.gd) at a true wrap of 0.12-0.78 rad.
+	#
+	# What makes this trustworthy where a count is not: it is continuous in
+	# every vertex position, so it cannot chatter, and it needs no shell.
+	#
+	# It does not loosen what counts as a catch - it TIGHTENS it, and provably.
+	# A rope merely LYING across a beam scores 0: all of its winding is tangent
+	# legs, which is exactly what the subtraction removes. A limp DRAPE scores
+	# pi and no more, however deep it hangs, because pi IS the pulley wrap -
+	# the exact boundary between "lies on" and "is wound on". Getting past pi
+	# needs an end of the rope to have gone round the far side. Measured:
+	# over the 113895 corpus ticks with the chain entirely on ONE side of a
+	# beam, or not touching it at all, this never once exceeded 2.933 rad.
+	# th_part = 3.4 therefore asks for a real hook a sixth of a turn past a
+	# half turn, and no drape in the corpus reaches it.
 	for k in a_pos.size():
 		var c := a_pos[k]
-		var band := a_r[k] + 0.35
-		var theta := 0.0
+		var r := a_r[k]
+		var phi := 0.0
+		var mind := 1e9
 		var nearest := -1
 		var nearest_d := 1e9
 		for i in range(NP - 1):
 			var v0 := pos[i] - c
 			var v1 := pos[i + 1] - c
+			phi += v0.angle_to(v1)
 			var d0 := v0.length()
-			var d1 := v1.length()
 			if d0 < nearest_d:
 				nearest_d = d0
 				nearest = i
-			# Count winding ONLY for a segment with BOTH ends against the
-			# beam. A straight chain merely lying across a beam has at most
-			# one vertex in the shell, so it now contributes nothing - it
-			# used to be credited 1.4-2.0 rad of "winding" for having wound
-			# precisely nothing, which gave away most of a catch before the
-			# whip did any work and let a dead-straight throw lock itself.
-			if d0 < band and d1 < band:
-				if d0 < a_r[k] + p_rad[i] + wrap_shell 						and d1 < a_r[k] + p_rad[i + 1] + wrap_shell:
-					theta += v0.angle_to(v1)
-		a_theta[k] = theta
-		if absf(theta) > 0.3 and nearest >= 0:
+			mind = minf(mind, c.distance_to(
+				Geometry2D.get_closest_point_to_segment(c, pos[i], pos[i + 1])))
+		# strip the two tangent legs: they carry winding but no wrap
+		var dh: float = maxf((pos[0] - c).length(), r)
+		var dt: float = maxf((pos[NP - 1] - c).length(), r)
+		var arc: float = absf(phi) - acos(clampf(r / dh, -1.0, 1.0)) \
+			- acos(clampf(r / dt, -1.0, 1.0))
+		if arc <= 0.0 or mind >= r + wrap_near:
+			a_theta[k] = 0.0
+		else:
+			a_theta[k] = arc if phi >= 0.0 else -arc
+		# The lock index answers "which material point would take this wrap",
+		# which is a fact about PROXIMITY, not about winding. Gating it on the
+		# winding angle refused 33 of the corpus's 3606 wrapped ticks outright:
+		# a self-crossing can hold a body while the taut wrap is still under
+		# 0.3 rad, and on those ticks the index read -1 and the catch was
+		# refused no matter how well the wrap itself was measured.
+		if nearest >= 0 and mind < r + wrap_near:
 			a_lockidx[k] = nearest
 		elif a_freelen[k] < 0.0:
 			a_lockidx[k] = -1
@@ -879,27 +924,26 @@ func _update_locks() -> void:
 	for k in a_pos.size():
 		var th := absf(a_theta[k])
 		var engaged := a_freelen[k] >= 0.0
-		# Remember when the geometry last qualified, and forget it the moment
-		# the wrap would have RELEASED had it been held (the file's own release
-		# rule, reused). This does not widen what qualifies - it is only ever
-		# written on a tick that already passes the unchanged test.
-		if th >= th_part and a_lockidx[k] >= pin_min_idx:
-			a_qtick[k] = tick_count
-		elif th < th_rel and not _pinch(k):
-			a_qtick[k] = -999
 		if not engaged:
 			if th < th_rel:
 				a_armed[k] = 1        # fully unwound: this anchor can catch again
-			# The window now looks BACK as far as it already looks forward: a
-			# press takes a wrap that qualified moments ago and has not released
-			# since. Nothing about the INPUT is stored - the press is consumed
-			# where it happens; what is stored is a fact about the ROPE. Of the
-			# two directions the FORWARD one is the more buffer-like, since it
-			# holds your press live and lets the sim pick the instant. A
-			# self-crossing also qualifies: _pinch is this file's own definition
-			# of a wrap that can hold a body, and it is STRICTER evidence than
-			# th_part, not looser.
-			if taut and tick_count - grip_edge <= GRIP_WINDOW and a_armed[k] == 1 and a_lockidx[k] >= pin_min_idx and (th >= th_part or _pinch(k) or tick_count - a_qtick[k] <= GRIP_WINDOW):
+			# A CATCH FIRES ONLY ON A ROPE THAT IS WRAPPED RIGHT NOW.
+			# The look-back that used to sit here ("...or it qualified within
+			# the last 15 ticks") was a bridge over the dead ticks the contact
+			# count produced. The taut wrap has none: measured over 576 thrown
+			# wraps, every single one now has an unbroken press window, and
+			# there is not one tick in 120960 where the rope is wrapped and
+			# this test is silent. So the bridge can no longer rescue anything
+			# - it can only admit rope that has stopped being wrapped, which it
+			# did on 449 ticks with the taut wrap between 1.80 and 3.40 rad,
+			# under a HALF TURN on 383 of them. It is gone.
+			# What remains is the FORWARD buffer, which is the honest half: you
+			# close your hand and the sim honours that press for GRIP_WINDOW
+			# ticks, taking the wrap the instant it exists and never before.
+			# A self-crossing also qualifies: _pinch is this file's own
+			# definition of a wrap that can hold a body, and it is STRICTER
+			# evidence than th_part, not looser.
+			if taut and tick_count - grip_edge <= GRIP_WINDOW and a_armed[k] == 1 and a_lockidx[k] >= pin_min_idx and (th >= th_part or _pinch(k)):
 				# engage: pin the rope's material point at the anchor, tether
 				# at the CURRENT distance -> no snap on catch
 				var li := a_lockidx[k]

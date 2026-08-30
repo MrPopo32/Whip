@@ -158,7 +158,15 @@ func _run() -> void:
 
 	# ---- run 3: full wrap locks and holds (G4) ----
 	var sim4 := _new_sim()
-	_prewrap(sim4, 0, 1.4)   # a real wrap: >1 turn, clear of the fold range
+	# 1.7, not 1.4. This rig lays the standing leg straight AT the beam centre
+	# with the tail hanging off tangentially, so ~2.9 rad of the laid arc is
+	# tangent leg that pulls straight out under load. Measured on the rig, the
+	# taut wrap is exactly pi - a drape - at BOTH 0.6 and 0.9 laid turns, and
+	# a 1.4-turn hang settles straddling the catch bar. 1.7 is the first value
+	# that is a real wrap clear of the fold range, which is what this line
+	# always meant. It passes on the old build too, so this is a rig fix and
+	# not a moved goalpost.
+	_prewrap(sim4, 0, 1.7)   # a real wrap: >1 turn, clear of the fold range
 	var c4: Vector2 = sim4.a_pos[0]
 	var locked_seen := false
 	var lowest := 0.0
@@ -184,7 +192,7 @@ func _run() -> void:
 
 	# ---- run 4: partial wrap slips (G5) ----
 	var sim5 := _new_sim()
-	_prewrap(sim5, 0, 0.9)   # a near miss: catches, then must betray
+	_prewrap(sim5, 0, 1.1)   # a near miss: catches, then must betray
 	var engaged_ticks := 0
 	var slip_ticks := 0
 	var pinned_ticks := 0
@@ -221,7 +229,7 @@ func _run() -> void:
 
 	# ---- run 4b: grip is load-bearing (G7) ----
 	var sim7 := _new_sim()
-	_prewrap(sim7, 0, 1.4)
+	_prewrap(sim7, 0, 1.7)
 	var c7: Vector2 = sim7.a_pos[0]
 	for t in 40:
 		sim7.step_tick(sim7.body_pos, true)     # gripped: engage and lock

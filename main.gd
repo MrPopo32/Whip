@@ -181,6 +181,16 @@ const UPGRADE_JUMP := 1.2             # rad above classified theta = real turn
 var t_a := PackedVector2Array()
 var t_b := PackedVector2Array()
 var t_n := PackedVector2Array()
+# Per-segment bounding box, so a particle can skip terrain it cannot possibly
+# be touching. Without this every one of 26 particles tests every segment and
+# every beam, twice, 16 times a tick - about 21,600 checks a frame, which
+# measured at 8-10 ms and half a 60 Hz budget before a single sprite exists.
+# The margin is deliberately generous: _collide_point acts at ANY depth on the
+# solid side (that is the rescue path for a particle found inside terrain), so
+# the cull must never hide a particle it would have lifted out.
+var t_lo := PackedVector2Array()
+var t_hi := PackedVector2Array()
+const CULL_MARGIN := 2.5              # m of slack around each segment's box
 
 var tip_speed := 0.0
 var crack_cooldown := 0.0
@@ -364,8 +374,12 @@ func _build_level() -> void:
 	# left wall, wound bottom-to-top so its outward normal points into the level
 	t_a.append(Vector2(-14, -8)); t_b.append(Vector2(-14, 0))
 	t_n.clear()
+	t_lo.clear()
+	t_hi.clear()
 	for i in t_a.size():
 		t_n.append(Vector2((t_b[i] - t_a[i]).y, -(t_b[i] - t_a[i]).x).normalized())
+		t_lo.append(Vector2(minf(t_a[i].x, t_b[i].x), minf(t_a[i].y, t_b[i].y)))
+		t_hi.append(Vector2(maxf(t_a[i].x, t_b[i].x), maxf(t_a[i].y, t_b[i].y)))
 
 	# Beams. DOOR beams sit 1.4 m past each lip: 2.2 m over the tier you
 	# throw from, 5.2 m over the tier you swing in - the only kind you can
@@ -616,6 +630,8 @@ func _collide() -> void:
 func _collide_point(i: int, pr: float) -> void:
 	var p := pos[i]
 	for s in t_a.size():
+		if p.x < t_lo[s].x - CULL_MARGIN or p.x > t_hi[s].x + CULL_MARGIN 				or p.y < t_lo[s].y - CULL_MARGIN or p.y > t_hi[s].y + CULL_MARGIN:
+			continue
 		var A := t_a[s]
 		var B := t_b[s]
 		var ab := B - A
@@ -650,9 +666,11 @@ func _collide_point(i: int, pr: float) -> void:
 				p = pos[i]
 	for k in a_pos.size():
 		var d2 := p - a_pos[k]
-		var l2 := d2.length()
 		var rr := a_r[k] + pr
-		if l2 < rr and l2 > 0.0001:
+		if d2.length_squared() >= rr * rr:
+			continue
+		var l2 := d2.length()
+		if l2 > 0.0001:
 			var n2 := d2 / l2
 			pos[i] = a_pos[k] + n2 * rr
 			# engaged wrap = static contact (the crossing chain pinches the
@@ -711,8 +729,13 @@ func _swept_anchor(i: int) -> void:
 	var lsq := seg.length_squared()
 	if lsq < 0.0004:
 		return
+	var slo := Vector2(minf(p0.x, p1.x), minf(p0.y, p1.y))
+	var shi := Vector2(maxf(p0.x, p1.x), maxf(p0.y, p1.y))
 	for k in a_pos.size():
 		var c := a_pos[k]
+		var rk: float = a_r[k] + p_rad[i]
+		if shi.x < c.x - rk or slo.x > c.x + rk 				or shi.y < c.y - rk or slo.y > c.y + rk:
+			continue
 		var tt := clampf((c - p0).dot(seg) / lsq, 0.0, 1.0)
 		var q := p0 + seg * tt
 		var rr := a_r[k] + p_rad[i]
@@ -731,7 +754,12 @@ func _swept_terrain(i: int) -> void:
 	var mv := p1 - p0
 	if mv.length_squared() < 0.0004:
 		return
+	var mlo := Vector2(minf(p0.x, p1.x), minf(p0.y, p1.y))
+	var mhi := Vector2(maxf(p0.x, p1.x), maxf(p0.y, p1.y))
 	for s in t_a.size():
+		# exact: two segments cannot cross if their boxes do not overlap
+		if mhi.x < t_lo[s].x or mlo.x > t_hi[s].x 				or mhi.y < t_lo[s].y or mlo.y > t_hi[s].y:
+			continue
 		var A := t_a[s]
 		var B := t_b[s]
 		var ab := B - A

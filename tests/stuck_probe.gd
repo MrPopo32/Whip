@@ -24,20 +24,35 @@ var repros: Array = []
 var entries: Array = []            # first-crossing records
 
 # ------------------------------------------------------------------ oracle --
-# solid regions of _build_level():
-#   upper tier : x in [-14,20], y > 0      lower tier : x in [20,62], y > 3
-#   left wall  : x < -14, y in [-8,0]      far seal   : x > 62,  y in [-4,3]
+# Solid = below the floor. Derived from the ACTUAL terrain each run, never
+# hardcoded: an earlier version had the old two-tier level's floors written
+# into it, so after the level was terraced it reported a particle 0.79 m in
+# open AIR as being 2.21 m inside rock, for 298 ticks. A gate carrying a stale
+# copy of the world does not fail loudly - it invents bugs, and costs a day.
+var _sim: Node2D = null
+
+func _floor_at(x: float) -> float:
+	# the highest surface spanning this x (y grows downward, so lowest y)
+	var best := 1e9
+	for s in _sim.t_a.size():
+		var A: Vector2 = _sim.t_a[s]
+		var B: Vector2 = _sim.t_b[s]
+		if absf(B.x - A.x) < 0.01:
+			continue
+		if x < minf(A.x, B.x) - 0.001 or x > maxf(A.x, B.x) + 0.001:
+			continue
+		var t := (x - A.x) / (B.x - A.x)
+		best = minf(best, A.y + (B.y - A.y) * t)
+	return best
+
 func _depth(p: Vector2) -> float:
-	var d := -1e9
-	if p.x >= -14.0 and p.x <= 20.0:
-		d = maxf(d, p.y)
-	if p.x >= 20.0 and p.x <= 62.0:
-		d = maxf(d, p.y - 3.0)
-	if p.x <= -14.0 and p.y >= -8.0 and p.y <= 0.0:
-		d = maxf(d, -14.0 - p.x)
-	if p.x >= 62.0 and p.y >= -4.0 and p.y <= 3.0:
-		d = maxf(d, p.x - 62.0)
-	return d
+	var f := _floor_at(p.x)
+	if f > 9e8:
+		# off the ends of the world: only the walls are solid there
+		if p.x <= -14.0 and p.y >= -8.0 and p.y <= 0.0:
+			return -14.0 - p.x
+		return -1e9
+	return p.y - f
 
 func _near_seg(m: Node2D, p: Vector2) -> String:
 	var best := 1e9
@@ -74,6 +89,7 @@ func _new() -> Node2D:
 	var m: Node2D = load(SIM).new()
 	m.external_drive = true
 	m.setup_sim()
+	_sim = m          # the oracle reads terrain from the live sim, not a copy
 	return m
 
 func _stand(m: Node2D, bx: float, trail := -1.0) -> void:

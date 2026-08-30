@@ -147,11 +147,6 @@ const PAYOUT_TICKS := 15              # one segment pays through per interval.
 # cannot bear you, taut bears you and cannot shape. Without it the rope is
 # inextensible in both modes, a wrap holds whether or not you grip, and the
 # grip button is decorative.
-const SLACK_PAYOUT_TICKS := 3         # ungripped wraps run out fast. NOT 2:
-                                      # an advance every 2 ticks is 30 Hz,
-                                      # exactly the tick Nyquist, so the
-                                      # ratchet strobes rather than reads as
-                                      # motion - and it fires on every dismount.
 const TAIL_MIN := 1                   # tail segments that must remain past the
                                       # pin. A real thrown catch lands its pin
                                       # at material index 19-24, so TAIL_MIN=5
@@ -275,7 +270,7 @@ func _ready() -> void:
 	hud.position = Vector2(16, 12)
 	hud.add_theme_font_size_override("font_size", 17)
 	hud.add_theme_color_override("font_color", Color(0.85, 0.87, 0.92))
-	hud.text = "THE WHIP  |  mouse: move handle   R: restart\nSPACE / LMB = CLOSE YOUR HAND on the rope. It is a grip, not a stiffener:\na wrap only takes in the moment you close it, and only holds while you hold.\ngreen ring = the rope has crossed itself and will hold. amber = it will betray.\nthe tether is fixed where you CATCH it - catch far, swing bigger, fly further"
+	hud.text = "THE WHIP  |  mouse: move handle   R: restart\nSPACE / LMB = CLOSE YOUR HAND on the rope. It is a grip, not a stiffener:\na wrap only takes in the moment you close it, and only holds while you hold.\nOPEN your hand and you leave the beam that instant - release is your launch.\ngreen ring = the rope has crossed itself and will hold. amber = it will betray."
 	canvas.add_child(hud)
 	status = Label.new()
 	status.position = Vector2(16, 146)
@@ -944,13 +939,28 @@ func _update_locks() -> void:
 					a_shed[k] = 0
 
 			if not taut:
-				# hand open: no standing-side tension, so the wrap cannot
-				# hold. The rope runs through your hand and you drop.
-				slipping = true
-				a_paytick[k] += 1
-				if a_paytick[k] >= SLACK_PAYOUT_TICKS:
-					a_paytick[k] = 0
-					_advance_pin(k)
+				# HAND OPEN = OFF THE BEAM, THIS TICK.
+				# A capstan is a capstan only while something holds the
+				# standing part. Open your hand and there is no standing
+				# tension, so there is no turn to run out - the rope simply
+				# leaves. One frame, every time, whatever the wrap was and
+				# wherever along the chain it caught.
+				# The old ungripped ratchet paid material through at 3 ticks
+				# per index, so a dismount took 3*(25-pin) ticks: 0.05 s to
+				# 1.10 s for identical player input, decided by a hidden
+				# material index nothing on screen shows. Worse, closing your
+				# hand again froze it outright (24 of 27 re-grip trials never
+				# came free in 15 s) and any grip reset the run to zero, so
+				# feathering the button welded you to the beam. A beam-to-beam
+				# line cannot be planned around a release of unknown length.
+				a_freelen[k] = -1.0
+				a_pinidx[k] = -1
+				a_locked[k] = -1
+				# You DROPPED the turn - it is not yours any more. Re-catching
+				# needs a fresh wrap (theta must fall under th_rel first), so
+				# tapping grip cannot reset a partial's betrayal and hang on
+				# it forever.
+				a_armed[k] = 0
 				continue
 			if a_locked[k] == -1:
 				# Judge the wrap on the WEAKEST winding it actually had, not

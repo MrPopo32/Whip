@@ -26,7 +26,10 @@ const NP := NSEG + 1
 const GRAV := Vector2(0.0, 10.0)  # y-down
 
 const REACH := 1.15               # m, cursor clamp radius around body
-const ARM_MAX := 1.30             # m, one-sided body<->handle tether
+var arm_max := 1.15                   # m, one-sided body<->handle tether.
+                                      # NOTE this is longer than REACH (1.15):
+                                      # the arm hangs further than it reaches,
+                                      # which deepens every hang by 0.15 m.
 const SPRING_K := 340.0           # handle spring toward cursor target
 const SPRING_C := 17.0            # handle spring damping (vs body-relative vel)
 const F_MAX := 320.0              # arm force cap ("panic saturates")
@@ -322,92 +325,66 @@ func _build_level() -> void:
 	# sits inside that envelope. Gaps are V-floored so a fall costs ground
 	# and time but never the run: the lash gait crawls out either side
 	# (measured ~0.37 m/s in tests/ground_probe.gd).
-	# LEVEL CONTRACT (all three numbers measured, not assumed):
-	#  - one stroke from standing throws the tip ~3.1 m up
-	#    (tests/ground_throw.gd), and BEAM HEIGHT - not taper - is what makes
-	#    a catch earned: tests/lock_rate.gd fires a grid of blind strokes and
-	#    measures, once winding is counted honestly, 50% of blind strokes
-	#    locking at a 2.0 m beam, 17% at 2.2 m and 0% at 2.4 m. Beams sit
-	#    2.2 m over their floor: half of blind strokes CATCH there but only
-	#    one in six LOCKS, so most contacts betray you - which is the texture
-	#    the whole wrap model exists to produce;
-	#  - the lash gait crawls flat ground at ~0.4 m/s but CANNOT climb even a
-	#    20 degree slope (tests/ground_probe.gd, tests/escape_probe.gd) - so
-	#    recovery can never depend on walking out of anywhere;
-	#  - therefore every surface a body can come to rest on has a beam within
-	#    throw range, and the traverse is two flat tiers joined by a drop.
-	# Falling costs the height and the momentum you spent earning, never the
-	# run: the lower tier is always completable beam by beam from the floor.
+	# LEVEL CONTRACT - measured, not assumed.
+	#
+	# THE GOVERNING FACT: a beam cannot be both catchable from a standstill
+	# (needs <= ~2.4 m above the floor you THROW from) and launchable (you
+	# hang tether + arm + body below it, so it needs > ~3.2 m of air under
+	# the arc). Those contradict each other only while both refer to the SAME
+	# floor - the contradiction is a property of flat ground, not of beams.
+	# A step dissolves it, because the beam then has TWO heights.
+	#
+	# So the level is that step, repeated: a flat tier, a lip, a beam hung
+	# 1.4 m PAST the lip, then a 3 m drop to the next tier. Each such beam is
+	# 2.2 m over the tier you throw from and 5.2 m over the one you swing in.
+	# Catch it standing on the tier and holding it hauls you off the edge -
+	# the tether is fixed at handle-to-wrap and your handle is out ahead of
+	# you, so the rope comes up shorter than you stand.
+	#
+	# Every drop faces DOWNHILL along the route, so the lash gait (which
+	# crawls flat ground at ~0.44 m/s and cannot climb even a 20 degree
+	# slope) can always shuffle forward to the next door beam. Falling costs
+	# ground and time; it never costs the run.
 	var pts: Array[Vector2] = [
-		Vector2(-14, 0), Vector2(20, 0),        # upper tier
-		Vector2(20, 3.0),                       # the drop
-		Vector2(62, 3.0),                       # lower tier
-		Vector2(62, -4.0),                      # seal the far end
+		Vector2(-14, 0), Vector2(20, 0),        # home tier: the school
+		Vector2(20, 3.0), Vector2(30, 3.0),     # tier 1
+		Vector2(30, 6.0), Vector2(40, 6.0),     # tier 2
+		Vector2(40, 9.0), Vector2(48, 9.0),     # tier 3 (short, so the last
+		Vector2(48, 12.0), Vector2(62, 12.0),   # fast beam clears its lip)
+		                                        # tier 4, the run out
+		Vector2(62, 5.0),                       # seal the far end
 	]
 	for i in range(pts.size() - 1):
 		t_a.append(pts[i])
 		t_b.append(pts[i + 1])
-	# left wall: wound bottom-to-top so its outward normal points INTO the
-	# level (+x), consistently with every other segment
+	# left wall, wound bottom-to-top so its outward normal points into the level
 	t_a.append(Vector2(-14, -8)); t_b.append(Vector2(-14, 0))
 	t_n.clear()
 	for i in t_a.size():
 		t_n.append(Vector2((t_b[i] - t_a[i]).y, -(t_b[i] - t_a[i]).x).normalized())
 
-	# Beams come in two kinds, and the split is structural rather than
-	# decorative. A hanging body rides ~1.3 m below the hand, so a beam only
-	# 2.2 m over its floor CANNOT carry a tether longer than ~1.9 m - the arc
-	# would go underground. RECOVERY beams (2.2 m) are therefore incapable of
-	# being the fast line no matter how well you throw at them: they exist so
-	# that no fall is ever terminal, and crawling the spine is roughly 8x
-	# slower than flying. FAST beams (4.5 m over the floor) are out of reach
-	# from the ground entirely - you can only catch one from the apex of a
-	# swing - and they are the only place a long tether has room to swing.
-	# The reward for a long catch needs no score: it IS the tether. A far
-	# catch is literally a bigger circle to swing on, and it is fixed for
-	# that catch. Fast beams sit ~7.8 m apart, further than a short catch's
-	# arc chord can bridge, so a lazy close catch leaves you short.
+	# Beams. DOOR beams sit 1.4 m past each lip: 2.2 m over the tier you
+	# throw from, 5.2 m over the tier you swing in - the only kind you can
+	# both catch cold and launch from. FAST beams sit 4.5 m over the tier
+	# beneath them, out of reach from the ground, catchable only from the
+	# apex of a swing, spaced 7.8 m - both numbers verified by the route bot
+	# (4/4 legs at 6.8 and 7.8 m, 3/4 at 8.6, 0/4 at 10.5; 4/4 at 4.5 m of
+	# height, 2/4 at 4.0, 0/4 at 3.0).
 	var anchors := [
-		# UPPER TIER (floor y=0). Radius now means RANGE, not difficulty: a
-		# thin beam costs less chain to wrap, so it is the only kind you can
-		# still lock from far away.
-		[-2.0, -2.2, 0.22],   # school: throw, wrap, grip, hang
-		[ 3.6, -2.2, 0.22],   # school: pump, release, chain a second catch
-		[10.4, -4.5, 0.10],   # FAST - the first beam your feet cannot reach
-		[15.6, -2.2, 0.20],   # recovery, and the run-up to the lip
-		[21.4, -2.2, 0.11],   # THE DOOR onto the fast line. Hung 1.4 m PAST
-		                      # the lip at x=20, so it has TWO heights: 2.2 m
-		                      # over the tier you THROW from and 5.2 m over
-		                      # the one you SWING in. Nothing else in the
-		                      # level has two, and that is the whole trick -
-		                      # a beam cannot be both catchable from a
-		                      # standstill (needs <= ~2.4 m) and launchable
-		                      # (needs > tether + 1.58 m) above the SAME
-		                      # floor. The contradiction is a property of
-		                      # flat ground, not of beams; a step dissolves
-		                      # it. The 3 m drop was already here - the beam
-		                      # was just parked 0.4 m on the wrong side.
-		                      # Technique: stand in the last metre before the
-		                      # drop and throw out over the void. The tether
-		                      # is fixed at handle-to-wrap, and your handle is
-		                      # out ahead of you, so the rope comes up shorter
-		                      # than you stand and holding it hauls you off
-		                      # the edge - arriving as an 80 degree swing
-		                      # rather than a yank, with no pump at all.
-		# LOWER TIER (floor y=3.0): a slow recovery spine at 2.2 m, and the
-		# fast line at 4.5 m - which is the minimum height a 4 m tether can
-		# swing under without the arc going underground.
-		[24.2,  0.8, 0.18],   # recovery - kept clear of the cliff face at x=20,
-		                      # where the trailing whip drapes onto the upper
-		                      # tier and spoils the stroke
-		[27.2, -1.5, 0.10],   # FAST - the first true hanging arc
-		[31.1,  0.8, 0.20],   # recovery
-		[35.0, -1.5, 0.10],   # FAST
-		[38.9,  0.8, 0.20],   # recovery
-		[42.8, -1.5, 0.10],   # FAST
-		[46.7,  0.8, 0.20],   # recovery
-		[50.6, -1.5, 0.10],   # FAST
-		[54.6,  0.8, 0.20],   # recovery, the last before the flag
+		# THE SCHOOL, on the home tier (floor y=0)
+		[-2.0, -2.2, 0.22],   # throw, wrap, grip, hang
+		[ 3.6, -2.2, 0.22],   # pump, release, chain a second catch
+		[15.6, -2.2, 0.20],   # the run-up to the first lip
+		# THE DOORS - one per lip, each 1.4 m past it
+		[21.4, -2.2, 0.11],   # onto tier 1
+		[31.4,  0.8, 0.11],   # onto tier 2
+		[41.4,  3.8, 0.11],   # onto tier 3
+		[49.4,  6.8, 0.11],   # onto tier 4
+		# THE FAST LINE - 4.5 m over the tier below, 7.8 m apart
+		[27.2, -1.5, 0.10],
+		[35.0,  1.5, 0.10],
+		[42.8,  4.5, 0.10],
+		[50.6,  7.5, 0.10],
 	]
 	for a: Array in anchors:
 		a_pos.append(Vector2(a[0], a[1]))
@@ -577,10 +554,10 @@ func _substep() -> void:
 func _solve_arm() -> void:
 	var d := pos[0] - body_pos
 	var l := d.length()
-	if l > ARM_MAX and l > 0.0001:
+	if l > arm_max and l > 0.0001:
 		var w0 := inv_m[0]
 		var wb := 1.0 / BODY_M
-		var corr := d * ((l - ARM_MAX) / l / (w0 + wb))
+		var corr := d * ((l - arm_max) / l / (w0 + wb))
 		pos[0] -= corr * w0
 		body_pos += corr * wb
 
@@ -1091,7 +1068,7 @@ func _draw() -> void:
 	for s in t_a.size():
 		draw_line(t_a[s] * PPM, t_b[s] * PPM, Color(0.32, 0.35, 0.42), 6.0)
 	# goal flag
-	var gp := Vector2(goal_x + 1.5, 3.0) * PPM
+	var gp := Vector2(goal_x + 1.5, 12.0) * PPM
 	draw_line(gp, gp + Vector2(0, -2.2) * PPM, Color(0.5, 0.5, 0.55), 3.0)
 	draw_colored_polygon(PackedVector2Array([
 		gp + Vector2(0, -2.2) * PPM,

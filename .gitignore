@@ -10,3 +10,11 @@ build/
 
 # Movie-maker frame dumps
 .movie/
+
+# transient agent scratch (probes live only as long as an investigation)
+tests/dr/
+tests/fb/
+tests/drag_*.gd
+tests/*_drag.gd
+tests/tier_check.gd
+tests/orc_*.gd

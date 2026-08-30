@@ -118,7 +118,6 @@ var a_half := PackedInt32Array()      # last half-wrap count (for tick sfx)
 #    wave that lifts segments off contact still frees it, loaded or not.
 var a_pinidx := PackedInt32Array()
 var a_pinpt := PackedVector2Array()
-var a_paytick := PackedInt32Array()   # payout timer for partial-wrap slip
 # wrap classification: measured contact-theta creeps upward as a loaded wrap
 # beds in against the anchor, so partial-vs-locked is decided ONCE from
 # settled geometry shortly after the catch and then FROZEN. It upgrades only
@@ -135,13 +134,11 @@ var a_minth := PackedFloat32Array()   # weakest theta seen during the settle
 # beam later is not part of that pinch and slides normally - without this, every
 # new contact glues on too and the coil accretes until the entire whip, handle
 # included, is spooled onto the beam (measured: 24 of 26 particles).
-var a_lastth := PackedFloat32Array()  # |theta| last tick, to see winding grow
-var a_shed := PackedInt32Array()      # timer for shedding an over-wound coil
+var a_paytick := PackedInt32Array()   # payout timer for a betraying wrap
 var a_prun := PackedInt32Array()      # consecutive ticks this wrap has pinched
 var a_clear := PackedInt32Array()     # consecutive ticks the rope has been off
 var a_wlo := PackedInt32Array()
 var a_whi := PackedInt32Array()
-const PAYOUT_TICKS := 15              # one segment pays through per interval.
                                       # Raised from 8 when the pin re-seat
                                       # landed: re-seating removes the wasted
                                       # teleport, which shortened the visible
@@ -155,6 +152,8 @@ const PAYOUT_TICKS := 15              # one segment pays through per interval.
 # cannot bear you, taut bears you and cannot shape. Without it the rope is
 # inextensible in both modes, a wrap holds whether or not you grip, and the
 # grip button is decorative.
+const PAYOUT_TICKS := 15              # ticks between one segment paying
+                                      # through a slipping partial wrap
 const TAIL_MIN := 1                   # tail segments that must remain past the
                                       # pin. A real thrown catch lands its pin
                                       # at material index 19-24, so TAIL_MIN=5
@@ -238,7 +237,6 @@ var taper := 26.0                     # handle:tip mass ratio (see _reset).
                                       # not satisfying to throw - with a little
                                       # more life than the original 22:1.
 var ground_mu := 0.30                 # chain/body friction against terrain
-# COIL MODES (debug toggle: press 0 / 1 / 3 in game)
 #  0 - off: winding a beam is free, so stirring the hand spools the whole whip
 #      onto it at no cost. This is what "it just keeps wrapping" feels like.
 #  1 - winding CONSUMES tether: every extra turn eats the rope it wound on, so
@@ -249,17 +247,13 @@ var ground_mu := 0.30                 # chain/body friction against terrain
 #  3 - mode 1 PLUS an over-wound coil pays back out under load: excess turns
 #      are unstable when you hang on them, so a coil you wound to climb sheds
 #      itself and drops you. Winding up costs rope; hanging on it gives it back.
-var coil_mode := 1
-const COIL_MIN_TETHER := 1.00         # m: winding can never reel you all the
                                       # way to the beam - it is a drift, not a
                                       # docking mechanism.
-const COIL_RATE := 0.10               # m/s cap on how fast winding may eat
                                       # tether. This has to read as being
                                       # slowly drawn in; anything brisk both
                                       # yanks the body into a thrash and makes
                                       # landing a good whip pointless, because
                                       # stirring would beat throwing.
-const COIL_EXCESS := 1.5              # rad past th_full before a coil sheds
 const PINCH_RAD := 0.10               # m: how close to the beam a self-crossing
                                       # has to be to count as a pinch
 const PINCH_TURN := 0.75              # turns of chain that must lie between the
@@ -277,7 +271,6 @@ const LOCK_WINDOW := 30               # ticks a catch has to produce a pinch
 # longer collect beams by accident while hanging on to another one.
 const GRIP_WINDOW := 15               # ticks after closing your hand in which
                                       # a wrap can take (250 ms)
-const COIL_SHED_TICKS := 6            # how fast an over-wound coil pays out
 var pin_min_idx := 3                  # earliest chain index that may hold a wrap
 var anchor_mu := 0.40                 # chain friction on a beam BEFORE a wrap
                                       # engages: how readily a glancing contact
@@ -338,11 +331,9 @@ func clear_anchors() -> void:
 		a_theta[k] = 0.0
 		a_half[k] = 0
 		a_pinidx[k] = -1
-		a_paytick[k] = 0
 		a_locked[k] = -1
 		a_armed[k] = 1
-		a_lastth[k] = 0.0
-		a_shed[k] = 0
+		a_paytick[k] = 0
 		a_prun[k] = 0
 		a_clear[k] = 0
 		a_pin0[k] = -1
@@ -442,7 +433,6 @@ func _build_level() -> void:
 		a_half.append(0)
 		a_pinidx.append(-1)
 		a_pinpt.append(Vector2.ZERO)
-		a_paytick.append(0)
 		a_locked.append(-1)
 		a_armed.append(1)
 		a_pin0.append(-1)
@@ -451,8 +441,7 @@ func _build_level() -> void:
 		a_minth.append(0.0)
 		a_wlo.append(0)
 		a_whi.append(0)
-		a_lastth.append(0.0)
-		a_shed.append(0)
+		a_paytick.append(0)
 		a_prun.append(0)
 		a_clear.append(0)
 
@@ -508,12 +497,6 @@ func _input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and not event.echo:
 		if event.keycode == KEY_R:
 			_reset()
-		elif event.keycode == KEY_0:
-			coil_mode = 0
-		elif event.keycode == KEY_1:
-			coil_mode = 1
-		elif event.keycode == KEY_3:
-			coil_mode = 3
 		elif event.keycode == KEY_ESCAPE:
 			get_tree().quit()
 
@@ -530,12 +513,7 @@ func _process(_d: float) -> void:
 	queue_redraw()
 	if status != null:
 		var secs := run_ticks / 60.0
-		var mode_txt := "0: winding is free"
-		if coil_mode == 1:
-			mode_txt = "1: winding eats rope"
-		elif coil_mode == 3:
-			mode_txt = "3: winding eats rope + over-coil sheds"
-		var line := "time %.1fs   falls %d   tip %.0f m/s      coil mode [%s]" 			% [secs, falls, tip_speed, mode_txt]
+		var line := "time %.1fs   falls %d   tip %.0f m/s" % [secs, falls, tip_speed]
 		if finished:
 			line = "TRAVERSE COMPLETE in %.1fs - press R to run it again" % secs
 		status.text = line
@@ -1161,12 +1139,9 @@ func _update_locks() -> void:
 					* (a_r[k] + p_rad[li])
 				var d := pos[0].distance_to(a_pinpt[k])
 				a_freelen[k] = minf(d, cum_len[li])
-				a_paytick[k] = 0
 				a_locked[k] = -1
 				a_pend[k] = 0
 				a_minth[k] = th
-				a_lastth[k] = th
-				a_shed[k] = 0
 				a_prun[k] = 0
 				# snapshot which chain is in this wrap, as offsets from the pin
 				var wlo := li
@@ -1184,31 +1159,6 @@ func _update_locks() -> void:
 				a_locked[k] = -1
 				a_armed[k] = 1
 				continue
-			# --- coil economy -------------------------------------------
-			if coil_mode > 0 and a_pinidx[k] >= 0:
-				# Consume rope only when the wrap passes its previous HIGH
-				# WATER MARK of winding. Measured theta jitters by more than a
-				# radian tick to tick, and charging every upward wobble (while
-				# never refunding the downward ones) is a ratchet on noise: it
-				# drains the tether to the floor and the constraint yanks the
-				# body into a thrash.
-				var dth := th - a_lastth[k]
-				if dth > 0.0:
-					a_lastth[k] = th
-					var arc := dth * (a_r[k] + p_rad[a_pinidx[k]])
-					arc = minf(arc, COIL_RATE * DT)   # never yank
-					a_freelen[k] = maxf(a_freelen[k] - arc, COIL_MIN_TETHER)
-				if coil_mode == 3 and th > th_full + COIL_EXCESS 						and (not grounded):
-					# an over-wound coil cannot bear your weight: the excess
-					# pays back out, giving the rope back and dropping you
-					a_shed[k] += 1
-					slipping = true
-					if a_shed[k] >= COIL_SHED_TICKS:
-						a_shed[k] = 0
-						_advance_pin(k)
-				else:
-					a_shed[k] = 0
-
 			if not taut:
 				# HAND OPEN = OFF THE BEAM, THIS TICK.
 				# A capstan is a capstan only while something holds the
@@ -1289,7 +1239,6 @@ func _update_locks() -> void:
 				slipping = true
 				a_paytick[k] += 1
 				if a_paytick[k] >= PAYOUT_TICKS:
-					a_paytick[k] = 0
 					_advance_pin(k)
 
 func _advance_pin(k: int) -> void:

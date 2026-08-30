@@ -189,6 +189,13 @@ var t_n := PackedVector2Array()
 # The margin is deliberately generous: _collide_point acts at ANY depth on the
 # solid side (that is the rescue path for a particle found inside terrain), so
 # the cull must never hide a particle it would have lifted out.
+var world_bottom := 6.0               # y past which the body is out of the
+                                      # world. DERIVED from the terrain, never
+                                      # hardcoded: it was a literal 6.0 and the
+                                      # level was later terraced down to y=12,
+                                      # so standing on either of the last two
+                                      # tiers tripped the out-of-world net and
+                                      # teleported the player to spawn.
 var t_lo := PackedVector2Array()
 var t_hi := PackedVector2Array()
 const CULL_MARGIN := 2.5              # m of slack around each segment's box
@@ -393,6 +400,11 @@ func _build_level() -> void:
 	t_n.clear()
 	t_lo.clear()
 	t_hi.clear()
+	var deepest := -1e9
+	for i in t_a.size():
+		deepest = maxf(deepest, maxf(t_a[i].y, t_b[i].y))
+	world_bottom = deepest + 4.0
+
 	for i in t_a.size():
 		t_n.append(Vector2((t_b[i] - t_a[i]).y, -(t_b[i] - t_a[i]).x).normalized())
 		t_lo.append(Vector2(minf(t_a[i].x, t_b[i].x), minf(t_a[i].y, t_b[i].y)))
@@ -641,6 +653,7 @@ func _collide() -> void:
 	for i in NP:
 		_swept_anchor(i)
 		_swept_terrain(i)
+	_swept_body()
 	for i in NP:
 		_collide_point(i, p_rad[i])
 	_collide_body()
@@ -801,6 +814,79 @@ func _swept_terrain(i: int) -> void:
 		_friction(i, n, ground_mu, 0.0)
 		return
 
+func _swept_body() -> void:
+	# Anti-tunnel for the body against the beams, same role as _swept_anchor
+	# does for the chain, and it runs in the same sweeps-before-discrete phase.
+	# The discrete test below only sees a body that ENDS a substep overlapping,
+	# so what it misses is set by how long a chord the path cuts, not by the
+	# beam's size. Measured (tests/bb.gd -- tunnel, phase-scanned, per substep,
+	# 0.10 m beam), the discrete pass ALONE first misses a contact of depth
+	#     0.3 mm at  30 m/s   2 mm at  81 m/s   5 mm at 128 m/s
+	#      20 mm at 255 m/s  50 mm at 391 m/s   the whole beam at 762 m/s
+	# and the fastest body the game produces is 31.7 m/s (tests/bb.gd -- speed:
+	# a hard crack while hanging, sustained per tick, not a one-substep spike).
+	# So the discrete pass alone would already be right to within a third of a
+	# millimetre and could not be walked through short of 24x the game's top
+	# speed - but 31.7 > 30, the margin is gone at the top of the range, and
+	# this closes it for nothing: it arms only above 19.2 m/s of substep travel
+	# and then only inside a beam's own bounding box. With it, no speed tested
+	# up to 30 km/s gets past any beam at any depth.
+	# Terrain gets no body sweep because it genuinely does not need one: a
+	# half-space has no chord to graze, so the body has to cover its own 0.28 m
+	# radius in one substep to tunnel it - 269 m/s.
+	var p0 := body_prv
+	var p1 := body_pos
+	var seg := p1 - p0
+	var lsq := seg.length_squared()
+	if lsq < 0.0004:
+		return
+	var slo := Vector2(minf(p0.x, p1.x), minf(p0.y, p1.y))
+	var shi := Vector2(maxf(p0.x, p1.x), maxf(p0.y, p1.y))
+	# Find the FIRST beam the path enters and resolve only that one. Resolving
+	# each beam in turn (which is what _swept_anchor does for the chain) would
+	# leave seg and the path box describing a journey the body no longer took,
+	# and there is no need: this is a single substep, and what happens after
+	# the body stops at the first beam is the next substep's business.
+	var best := 2.0
+	var bk := -1
+	for k in a_pos.size():
+		var c := a_pos[k]
+		var rk: float = a_r[k] + BODY_R
+		if shi.x < c.x - rk or slo.x > c.x + rk 			or shi.y < c.y - rk or slo.y > c.y + rk:
+			continue
+		var e := p0 - c
+		var b := e.dot(seg)
+		var cc := e.length_squared() - rk * rk
+		if cc < 0.0:
+			continue                    # started inside: the discrete pass owns it
+		var disc := b * b - lsq * cc
+		if disc <= 0.0:
+			continue                    # the path misses the circle entirely
+		var tt := (-b - sqrt(disc)) / lsq
+		if tt < 0.0 or tt > 1.0 or tt >= best:
+			continue
+		best = tt
+		bk = k
+	if bk < 0:
+		return
+	# Resolve at the ENTRY point, not at wherever the body ended up:
+	# _swept_anchor pushes a chain particle out along (p1 - c), which for a
+	# tunnelling particle is the FAR side - fine for a 0.02 m rope vertex
+	# nobody can see, wrong for the body, because it hands you a free pass
+	# through the beam. A beam you hit is a beam you do not get to be behind.
+	var rr: float = a_r[bk] + BODY_R
+	var n := (p0 + seg * best) - a_pos[bk]
+	if n.length() < 0.0001:
+		return
+	n = n.normalized()
+	body_pos = a_pos[bk] + n * rr
+	# Carry the INCOMING velocity across the resolution, minus its inward
+	# normal part. Same reasoning as _swept_terrain: scaling what survives by
+	# the crossing fraction - where in the substep it happened - is physically
+	# meaningless, and the place-out displacement must never become velocity.
+	# Only approach is removed, so a body already leaving is not glued on.
+	body_prv = body_pos - (seg - n * minf(seg.dot(n), 0.0))
+
 func _collide_body() -> void:
 	grounded = false
 	var p := body_pos
@@ -829,6 +915,70 @@ func _collide_body() -> void:
 			body_prv = body_pos - vt
 			grounded = true
 			p = body_pos
+	# THE BEAMS ARE SOLID. This loop used to be missing entirely: the body was
+	# tested against terrain and nothing else, so it passed clean through the
+	# very beam it was hanging from - measured at up to 0.50 m of overlap, the
+	# whole beam swallowed, on every radius in the level (tests/bb.gd -- ghost).
+	# Anchors are convex circles, so unlike the terrain polyline there is no
+	# "which side is solid" question and no rescue branch is needed: outward is
+	# always radially away from the centre.
+	#
+	# NO TANGENTIAL FRICTION, and that is the design ruling, not laziness. A
+	# beam that grips is a PLATFORM: Coulomb friction holds a body at rest
+	# anywhere inside atan(mu) of the apex, which at ground_mu is 17 degrees -
+	# a 0.11 m half-width on the thinnest beam, and wider than that in practice
+	# because a body that ARRIVES with momentum beds in. Measured both ways
+	# (tests/bb.gd -- rest, this build against the same patch with the
+	# tangential Coulomb cap switched on at ground_mu):
+	#        dropped on it        a player actively trying to perch
+	#   0.30   17-18 of 20 stay,   14 of 15 with the hand held overhead,
+	#          out to 0.18 m       15 of 15 with it held still or below
+	#   0.00   1 of 20 - and       0 of 15, on every beam, every hand
+	#          that one is the
+	#          exact float apex
+	# The apex case is the exact-zero offset; one micrometre off it and the
+	# body slides away (worst 3.3 s), so it is unreachable in play rather than
+	# merely unlikely. mu = 0.30 is a second way to be somewhere the whip is
+	# supposed to be the only way to reach - a free rest on the HIGH beams the
+	# README calls the skill ceiling, and one the "a fall costs ground, never
+	# the run" contract has no answer for. It is an assist, so it is out.
+	# It is also what a smooth round bar and a body with no arms actually do:
+	# the rope is how you hold a beam. That is the whole game.
+	#
+	# So the beam takes the APPROACH component of the body's velocity and
+	# nothing else - the least a solid can take. Measured (tests/bb.gd
+	# -- swing) at 8 m/s past a beam: exactly 0.000% and 0.0 degrees at any
+	# clearance at or above zero - a beam you miss is bit-for-bit invisible -
+	# 10-13% if you clip it by 0.05 m, 40-52% if you bury 0.20 m into it. Flown
+	# past the real beams on the real level, patched against the build at HEAD:
+	# 0.00% wherever the old body would not have overlapped either, 0.6% on a
+	# graze. What is left is not drag, it is the beam being in the way.
+	#
+	# grounded is deliberately NOT set here. It means "standing on the floor",
+	# and it is what _update_locks reads to decide a partial wrap is unloaded
+	# and may stop paying out. Letting a beam set it would freeze the betrayal
+	# of any partial wrap you happened to be leaning on - a stuck state built
+	# out of the anti-stuck mechanism.
+	for k in a_pos.size():
+		var dk := p - a_pos[k]
+		var rr: float = a_r[k] + BODY_R
+		if dk.length_squared() >= rr * rr:
+			continue
+		var lk := dk.length()
+		if lk <= 0.0001:
+			continue
+		var nk := dk / lk
+		# v is read BEFORE the push-out, so the depenetration displacement never
+		# becomes velocity (the same discipline _collide_point's rescue branch
+		# and _swept_terrain use, and stricter than the terrain branch above,
+		# which reads v after). Only the approach half is removed: zeroing the
+		# whole normal component would also cancel a body that is LEAVING, and
+		# since the arm tether can push the body into a beam every substep,
+		# that would read as glue.
+		var vk := body_pos - body_prv
+		body_pos = a_pos[k] + nk * rr
+		body_prv = body_pos - (vk - nk * minf(vk.dot(nk), 0.0))
+		p = body_pos
 
 # ------------------------------------------------------------- wrap logic --
 func _measure_wraps() -> void:
@@ -1186,7 +1336,7 @@ func _events() -> void:
 	# of the map). Move body AND chain rigidly at rest and drop every wrap -
 	# teleporting the body alone would leave the whip metres away and the arm
 	# tether would fire it across the level.
-	if body_pos.y > 6.0:
+	if body_pos.y > world_bottom:
 		falls += 1
 		teleport(spawn)
 		clear_anchors()

@@ -138,6 +138,7 @@ var a_minth := PackedFloat32Array()   # weakest theta seen during the settle
 var a_lastth := PackedFloat32Array()  # |theta| last tick, to see winding grow
 var a_shed := PackedInt32Array()      # timer for shedding an over-wound coil
 var a_prun := PackedInt32Array()      # consecutive ticks this wrap has pinched
+var a_clear := PackedInt32Array()     # consecutive ticks the rope has been off
 var a_wlo := PackedInt32Array()
 var a_whi := PackedInt32Array()
 const PAYOUT_TICKS := 15              # one segment pays through per interval.
@@ -191,6 +192,21 @@ var t_n := PackedVector2Array()
 var t_lo := PackedVector2Array()
 var t_hi := PackedVector2Array()
 const CULL_MARGIN := 2.5              # m of slack around each segment's box
+# A beam you have LET GO OF is not something your rope grips, and not something
+# it can be caught by. A capstan multiplies the tension you are holding; with
+# an open hand there is nothing to multiply, so the rope should simply slide
+# off. Shipping without this, a released beam kept full kinetic friction and
+# the capstan went on amplifying it: measured, ~80% of the drag on a dismount
+# was friction on a rope nobody was holding - 1.27 m/s of the launch, 1.42 m/s
+# of it aimed straight back at the beam, still acting ~950 ms after release.
+# Worse, it was invisible: a rope merely DRAPED along a beam reads as almost no
+# wrap yet touches over 17-20 particles, so the throws the ring showed as
+# barely wrapped dragged MORE than clean ones. That is randomness, not skill.
+# The same disarm also stops the beam re-taking the rope when you press for the
+# NEXT one - 25 of 108 attempts, 24 of them through the self-crossing branch at
+# a wrap angle far below the catch bar.
+const RELEASED_MU := 0.04             # friction on a beam you have let go of
+const CLEAR_TICKS := 10               # ticks with no contact before it re-arms
 
 var tip_speed := 0.0
 var crack_cooldown := 0.0
@@ -321,6 +337,7 @@ func clear_anchors() -> void:
 		a_lastth[k] = 0.0
 		a_shed[k] = 0
 		a_prun[k] = 0
+		a_clear[k] = 0
 		a_pin0[k] = -1
 		a_pend[k] = 0
 		a_ength[k] = 0.0
@@ -425,6 +442,7 @@ func _build_level() -> void:
 		a_lastth.append(0.0)
 		a_shed.append(0)
 		a_prun.append(0)
+		a_clear.append(0)
 
 func _reset() -> void:
 	pos.resize(NP); prv.resize(NP)
@@ -701,6 +719,8 @@ func _collide_point(i: int, pr: float) -> void:
 			var mu := anchor_mu
 			if a_freelen[k] >= 0.0 and i >= a_pinidx[k] + a_wlo[k] and i <= a_pinidx[k] + a_whi[k]:
 				mu = 8.0
+			elif a_armed[k] == 0:
+				mu = RELEASED_MU      # let go of: it slides, it does not grip
 			_friction(i, n2, mu, rr - l2)
 			p = pos[i]
 
@@ -953,8 +973,18 @@ func _update_locks() -> void:
 		var th := absf(a_theta[k])
 		var engaged := a_freelen[k] >= 0.0
 		if not engaged:
-			if th < th_rel:
-				a_armed[k] = 1        # fully unwound: this anchor can catch again
+			# Re-arm on the rope being CLEAR, not on the wrap angle dropping.
+			# The angle falls the instant you let go while the rope is still
+			# lying across the beam - which is how the beam you just left was
+			# re-catching you on the press meant for the next one.
+			var touching := 0
+			for i in NP:
+				if (pos[i] - a_pos[k]).length_squared() 						< pow(a_r[k] + p_rad[i] + 0.06, 2.0):
+					touching += 1
+					break
+			a_clear[k] = 0 if touching > 0 else a_clear[k] + 1
+			if a_clear[k] >= CLEAR_TICKS and th < th_rel:
+				a_armed[k] = 1        # rope is off it: this beam can catch again
 			# A CATCH FIRES ONLY ON A ROPE THAT IS WRAPPED RIGHT NOW.
 			# The look-back that used to sit here ("...or it qualified within
 			# the last 15 ticks") was a bridge over the dead ticks the contact

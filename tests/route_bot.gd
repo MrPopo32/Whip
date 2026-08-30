@@ -42,6 +42,7 @@ extends SceneTree
 ##   godot --headless --path . -s res://tests/route_bot.gd -- entry
 ##   godot --headless --path . -s res://tests/route_bot.gd -- sweep
 ##   godot --headless --path . -s res://tests/route_bot.gd -- lip
+##   godot --headless --path . -s res://tests/route_bot.gd -- ledge
 
 const PUMP := preload("res://tests/bot_pump.gd")
 const LEAP := preload("res://tests/bot_leap.gd")
@@ -127,10 +128,46 @@ func beam_height(m: Node2D, k: int) -> float:
 func is_fast(m: Node2D, k: int) -> bool:
 	return beam_height(m, k) > 4.0
 
+# THE OTHER HEIGHT. beam_height asks how much air is under the beam, which is
+# what decides whether you can SWING on it. This asks how high it is over the
+# floor you would be STANDING ON to throw at it, which is what decides whether
+# you can get on it in the first place - and on a beam hung past a cliff lip
+# those are two different floors. Every beam on flat ground reads the same
+# either way; the lip beam is the one place they diverge, which is exactly why
+# it is the door.
+func throw_height(m: Node2D, k: int) -> float:
+	return floor_y(m, float(m.a_pos[k].x) - 2.4) - float(m.a_pos[k].y)
+
+func from_ground(m: Node2D, k: int) -> bool:
+	return throw_height(m, k) <= 3.0
+
+# The honest test of "can I throw at this beam from where I would stand": how
+# high is it above the FLOOR AT THE THROWING STATION, 2.4 m behind it? On the
+# flat v1 level that is the beam's own height and this picks exactly the 2.2 m
+# recovery beams. On a terraced level it picks the beams that hang past a lip -
+# low over the terrace behind them, high over the one they swing on.
+func stand_height(m: Node2D, k: int) -> float:
+	var f := floor_y(m, float(m.a_pos[k].x) - 2.4)
+	if f > 90.0:
+		return -1.0
+	return f - float(m.a_pos[k].y)
+
+func throwable_ahead(m: Node2D, x: float) -> int:
+	var best := -1
+	for k in m.a_pos.size():
+		if float(m.a_pos[k].x) < x:
+			continue
+		var h := stand_height(m, k)
+		if h < 1.2 or h > 2.4:
+			continue
+		if best < 0 or float(m.a_pos[k].x) < float(m.a_pos[best].x):
+			best = k
+	return best
+
 func recovery_ahead(m: Node2D, x: float) -> int:
 	var best := -1
 	for k in m.a_pos.size():
-		if is_fast(m, k):
+		if not from_ground(m, k):
 			continue
 		if float(m.a_pos[k].x) < x:
 			continue
@@ -142,6 +179,8 @@ func new_level() -> Node2D:
 	var m: Node2D = load("res://main.gd").new()
 	m.external_drive = true
 	m.setup_sim()
+	if use_v2:
+		apply_v2(m)
 	return m
 
 # --------------------------------------------------------------- the crawl --
@@ -227,6 +266,10 @@ func throw_once(m: Node2D, k: int, c: Dictionary, L, settle := 55) -> Dictionary
 	var pull: bool = bool(c["pull"])
 	var w: int = int(c["w"])
 	var caught := false
+	var ex := 0.0
+	var ey := 0.0
+	var egnd := false
+	var et := -1
 	for t in w + 130:
 		var ang: float
 		var amp := 1.0
@@ -252,15 +295,21 @@ func throw_once(m: Node2D, k: int, c: Dictionary, L, settle := 55) -> Dictionary
 		step(m, tgt, grip, L)
 		if float(m.a_freelen[k]) >= 0.0:
 			caught = true
+			ex = m.body_pos.x
+			ey = m.body_pos.y
+			egnd = m.grounded
+			et = t
 			break
 	if not caught:
-		return {"ok": false, "locked": -1, "tether": -1.0}
+		return {"ok": false, "locked": -1, "tether": -1.0, "et": -1,
+			"ex": m.body_pos.x, "ey": m.body_pos.y, "egnd": m.grounded}
 	for t in settle:
 		step(m, m.body_pos, true, L)
 		if float(m.a_freelen[k]) < 0.0:
 			break
 	return {"ok": float(m.a_freelen[k]) >= 0.0, "locked": int(m.a_locked[k]),
-		"tether": float(m.a_freelen[k])}
+		"tether": float(m.a_freelen[k]), "et": et, "ex": ex, "ey": ey,
+		"egnd": egnd}
 
 # level_probe's stroke grid, scored for a route instead of for an audit: a LOCK
 # is the only acceptable outcome (a partial pays out and drops you) and among
@@ -320,6 +369,7 @@ func plan_throw(m: Node2D, k: int, L) -> Dictionary:
 		L.cands += tried
 	var rr := throw_once(m, k, best, L)      # COMMIT the winner, good or bad
 	rr["tried"] = tried
+	rr["c"] = best
 	return rr
 
 # Crawl into range behind beam k and throw. Leads are tried far to near, which
@@ -609,7 +659,7 @@ func run_route(route: Array, cap := 90000) -> Ledger:
 			continue
 		# on the floor
 		var kt := k
-		if is_fast(m, k):
+		if not from_ground(m, k):
 			kt = recovery_ahead(m, m.body_pos.x + 1.2)
 			if kt < 0:
 				break
@@ -618,10 +668,19 @@ func run_route(route: Array, cap := 90000) -> Ledger:
 			continue
 		var rr := ground_capture(m, kt, L)
 		if bool(rr["ok"]) and int(rr["locked"]) == 1:
-			print("    %4d  floor -> A%-2d  throw   LOCK from a standstill, tether %.2f m%s  [%d cand]"
+			var off := ""
+			if is_fast(m, kt) and m.grounded:
+				# The beam you just caught hangs over a drop and you are still
+				# standing on the high side of it. HAUL: the only move there is
+				# while attached, because opening your hand takes you off the
+				# beam that tick.
+				var hh := haul_off(m, kt, L)
+				off = " then hauled %+.2f m off the lip into %.1f m of air" % [
+					float(hh["dx"]), beam_height(m, kt)] if bool(hh["air"]) else ""
+			print("    %4d  floor -> A%-2d  throw   LOCK from a standstill, tether %.2f m%s%s  [%d cand]"
 				% [stepn, kt, float(rr["tether"]),
 				   "" if float(rr["tether"]) <= beam_height(m, kt) - 0.8
-				   else " - TOO LONG TO SWING ON",
+				   else " - TOO LONG TO SWING ON", off,
 				   int(rr["tried"])])
 			L.legs.append([-1, kt, "throw", true])
 			cur = kt
@@ -680,7 +739,12 @@ func report(L: Ledger, label: String) -> void:
 func sec_level(m: Node2D) -> void:
 	print("0) THE LEVEL AS BUILT. 'over floor' is measured to the terrain directly")
 	print("   under the beam, which is what decides whether a body can hang there.")
-	print("   beam    x      y     r     over floor  kind      next of its kind")
+	print("   'over the floor you throw from' is measured 2.4 m BEHIND the beam,")
+	print("   which is where you stand to stroke at it. On flat ground the two are")
+	print("   the same number; over a cliff lip they are not, and that gap is the")
+	print("   only door onto the fast line.")
+	print("   beam    x      y     r    over  throw  kind      next of its kind")
+	print("                                floor  from")
 	var rec: Array = []
 	var fst: Array = []
 	for k in m.a_pos.size():
@@ -700,9 +764,12 @@ func sec_level(m: Node2D) -> void:
 			g = "%.1f m to A%d (%+.1f m in height)" % [
 				float(m.a_pos[nxt].x) - float(m.a_pos[k].x), nxt,
 				float(m.a_pos[k].y) - float(m.a_pos[nxt].y)]
-		print("   A%-3d  %5.1f  %5.1f  %.2f    %.2f m     %-9s %s"
+		var kind := "FAST" if is_fast(m, k) else "recovery"
+		if is_fast(m, k) and from_ground(m, k):
+			kind = "THE DOOR"
+		print("   A%-3d  %5.1f  %5.1f  %.2f  %.2f  %5.2f  %-9s %s"
 			% [k, float(m.a_pos[k].x), float(m.a_pos[k].y), float(m.a_r[k]),
-			   beam_height(m, k), "FAST" if is_fast(m, k) else "recovery", g])
+			   beam_height(m, k), throw_height(m, k), kind, g])
 	print("   spawn (%.1f, %.1f), goal x = %.1f"
 		% [float(m.spawn.x), float(m.spawn.y), float(m.goal_x)])
 	print("")
@@ -1411,6 +1478,472 @@ func sec_lip() -> void:
 		m.free()
 	print("")
 
+
+# ------------------------------------------------ THE RECOVERY-SPINE LENS --
+# Sections 9-12 exist to answer one question: given that a 2.2 m recovery beam
+# can be CAUGHT from a standstill and never LEFT, what should the spine be?
+# Everything below is measured on the same sim, with the same three verbs.
+
+func set_terrain(m: Node2D, pts: Array) -> void:
+	m.t_a.clear(); m.t_b.clear(); m.t_n.clear()
+	for i in range(pts.size() - 1):
+		m.t_a.append(pts[i]); m.t_b.append(pts[i + 1])
+	for i in m.t_a.size():
+		var d: Vector2 = Vector2(m.t_b[i]) - Vector2(m.t_a[i])
+		m.t_n.append(Vector2(d.y, -d.x).normalized())
+
+func banish(m: Node2D) -> void:
+	# park every anchor where nothing can touch it, so a bench measures one beam
+	for k in m.a_pos.size():
+		m.a_pos[k] = Vector2(-900.0, -900.0)
+
+func gait_run(m: Node2D, ticks: int, L) -> void:
+	for t in ticks:
+		var f := float(t % GAIT_PERIOD) / float(GAIT_PERIOD)
+		var tgt: Vector2
+		var grip := false
+		if f < 0.45:
+			tgt = m.body_pos + Vector2(cos(GAIT_BACK), sin(GAIT_BACK)) * m.REACH
+		else:
+			tgt = m.body_pos + Vector2(cos(GAIT_FWD), sin(GAIT_FWD)) * m.REACH
+			grip = f > GAIT_TAUT
+		step(m, tgt, grip, L)
+
+func pump_peak(m: Node2D, k: int, secs := 20) -> Array:
+	# pump flat out and report [peak swing deg, peak body speed, still on?]
+	var prev: Vector2 = m.body_pos
+	var pk := 0.0
+	var vmax := 0.0
+	for t in secs * 60:
+		var cur: Vector2 = PUMP.pump_cursor(m, k, prev, 95.0)
+		prev = m.body_pos
+		step(m, cur, true, null)
+		if float(m.a_freelen[k]) < 0.0:
+			return [pk, vmax, false]
+		var s := PUMP.swing_state(m, k, prev)
+		pk = maxf(pk, absf(rad_to_deg(float(s["theta"]))))
+		vmax = maxf(vmax, (m.body_pos - prev).length() * 60.0)
+	return [pk, vmax, true]
+
+func sec_grade() -> void:
+	print("9) HOW STEEP A SLOPE CAN THE LASH GAIT ACTUALLY CLIMB? Every claim in")
+	print("   this project rests on tests/escape_probe.gd, which measured DIPS")
+	print("   that no longer exist in the level. Re-measured here on clean ramps,")
+	print("   30 s of gait each, no anchors in reach. This decides whether a")
+	print("   terraced or ramped floor is even legal.")
+	print("     grade      travelled   height gained   net speed")
+	for g in [0.0, 3.0, 6.0, 9.0, 12.0, 16.0, 20.0, -6.0, -12.0, -20.0]:
+		var m := new_level()
+		banish(m)
+		var s := tan(deg_to_rad(g))
+		set_terrain(m, [Vector2(-30, 0), Vector2(0, 0),
+			Vector2(30, -30.0 * s), Vector2(50, -30.0 * s)])
+		place(m, -2.0)
+		var x0: float = m.body_pos.x
+		var y0: float = m.body_pos.y
+		gait_run(m, 1800, null)
+		var dx: float = m.body_pos.x - x0
+		var dy: float = y0 - m.body_pos.y
+		print("     %+5.1f deg   %6.2f m     %+6.2f m       %.2f m/s"
+			% [g, dx, dy, dx / 30.0])
+		m.free()
+	print("")
+
+func sec_shelf() -> void:
+	print("10) THE TWO HALVES OF A RECOVERY BEAM, AS ONE CURVE IN ONE NUMBER.")
+	print("    A clean bench: flat floor, ONE recovery beam h metres over it at")
+	print("    x=10, and a fast beam 4.5 m over the same floor 3.0 m further on")
+	print("    (the real A5->A6 geometry, generalised). The body is placed 8 m")
+	print("    back and CRAWLS in, so the whip is in the state a run leaves it,")
+	print("    not hand-draped. Then the route's own lead ladder throws at it,")
+	print("    then it pumps for 20 s, then it tries to leave.")
+	print("     h      catch from a standstill        pump      leave for the fast beam")
+	print("            lock  tether  ticks to catch   peak sw   ")
+	for h in [2.0, 2.2, 2.6, 3.0, 3.4, 3.8, 4.2]:
+		var m := new_level()
+		banish(m)
+		set_terrain(m, [Vector2(-30, 0), Vector2(45, 0)])
+		m.a_pos[5] = Vector2(10.0, -h); m.a_r[5] = 0.18
+		m.a_pos[6] = Vector2(13.0, -4.5); m.a_r[6] = 0.10
+		place(m, 2.0)
+		var L := Ledger.new()
+		L.maxx = m.body_pos.x
+		var t0 := L.ticks
+		var r := ground_capture(m, 5, L)
+		var tcatch := L.ticks - t0
+		if not (bool(r["ok"]) and int(r["locked"]) == 1):
+			print("     %.1f m  NO    -       %5.1f s          -         -"
+				% [h, tcatch / 60.0])
+			m.free()
+			continue
+		var teth: float = float(r["tether"])
+		var save := LEAP.save_state(m)
+		var pk := pump_peak(m, 5, 20)
+		LEAP.load_state(m, save)
+		var lr := leap_search(m, 5, 6, null, [-0.5, -0.8], [38])
+		var v := "missed"
+		if bool(lr["held"]) and int(lr["on"]) == 6:
+			v = "HELD the fast beam (%s, %.2f m)" % [
+				"LOCK" if int(lr["locked"]) == 1 else "amber", float(lr["tether"])]
+		elif bool(lr["held"]):
+			v = "held something else"
+		elif not bool(lr["launched"]):
+			v = "NEVER LAUNCHED"
+		elif bool(lr["caught"]):
+			v = "caught then betrayed"
+		print("     %.1f m  yes   %.2f m  %5.1f s          %3.0f deg   %s"
+			% [h, teth, tcatch / 60.0, float(pk[0]), v])
+		m.free()
+	print("")
+
+
+func sec_terrace() -> void:
+	print("11) THE TERRACE. Section 10 says a 2.2 m beam can be caught and never")
+	print("    left, and says WHY: the throw from a standstill fixes a 1.6-2.3 m")
+	print("    tether, and tether + the pump arm 1.30 + body 0.28 has to fit under")
+	print("    the beam. So do not raise the beam - drop the floor PAST it. The")
+	print("    beam stays 2.0 m over the terrace you throw from and becomes")
+	print("    2.0 + step over the one you swing over. Clean bench: upper floor to")
+	print("    x=0, a face, lower floor beyond, beam `off` metres past the lip at")
+	print("    2.0 m over the UPPER floor, and a fast beam 6.0 m on at 4.5 m over")
+	print("    the LOWER one. Body placed 8 m back on the upper terrace, CRAWLS in.")
+	print("     step  off   face   catch from the upper terrace   pump    onto the fast beam")
+	# `off` cannot exceed ~2.5 m: the thrower has to STAND on the upper terrace,
+	# and the lead ladder tops out at 2.9 m. off 3.0+ walks the body off the
+	# edge before it throws, which measures the bot, not the level.
+	for cell in [[2.2, 2.0, 90.0], [2.6, 2.0, 90.0], [3.0, 2.0, 90.0],
+			[3.4, 2.0, 90.0], [3.0, 1.4, 90.0], [3.0, 2.5, 90.0]]:
+		var d: float = float(cell[0])
+		var off: float = float(cell[1])
+		var fa: float = float(cell[2])
+		var m := new_level()
+		banish(m)
+		var fw: float = 0.0 if fa >= 89.0 else d / tan(deg_to_rad(fa))
+		set_terrain(m, [Vector2(-30, 0), Vector2(0, 0), Vector2(fw, d),
+			Vector2(45, d)])
+		m.a_pos[5] = Vector2(off, -2.0); m.a_r[5] = 0.18
+		m.a_pos[6] = Vector2(off + 6.0, d - 4.5); m.a_r[6] = 0.10
+		place(m, -8.0)
+		var L := Ledger.new()
+		L.maxx = m.body_pos.x
+		var t0 := L.ticks
+		var r := ground_capture(m, 5, L)
+		var tc := L.ticks - t0
+		if not (bool(r["ok"]) and int(r["locked"]) == 1):
+			print("     %.1f   %.1f   %2.0f     NO LOCK  (%.1f s spent)          -       -"
+				% [d, off, fa, tc / 60.0])
+			m.free()
+			continue
+		var teth: float = float(r["tether"])
+		var save := LEAP.save_state(m)
+		var pk := pump_peak(m, 5, 20)
+		LEAP.load_state(m, save)
+		var lr := leap_search(m, 5, 6, null, [-0.5, -0.8], [38])
+		var v := "missed"
+		if bool(lr["held"]) and int(lr["on"]) == 6:
+			v = "HELD (%s, %.2f m)" % ["LOCK" if int(lr["locked"]) == 1
+				else "amber", float(lr["tether"])]
+		elif bool(lr["held"]):
+			v = "held something else"
+		elif not bool(lr["launched"]):
+			v = "NEVER LAUNCHED"
+		elif bool(lr["caught"]):
+			v = "caught then betrayed"
+		print("     %.1f   %.1f   %2.0f     lock, tether %.2f m, %4.1f s   %3.0f deg  %s"
+			% [d, off, fa, teth, tc / 60.0, float(pk[0]), v])
+		m.free()
+	print("     (deepest a hang can reach = tether + 1.30 + 0.28. Compare it with")
+	print("      2.0 + step, which is what the beam is over the floor it swings on.)")
+	print("")
+
+
+func sec_descend() -> void:
+	print("12) CAN THE FAST LINE DESCEND? If the recovery beam has to be 2.0 m")
+	print("    over the terrace you throw from and 4.5 m over the one you swing")
+	print("    on, the world has to step down. That makes every fast leg a")
+	print("    DESCENDING one, which nothing has measured: section 7 only ever")
+	print("    moved A8 sideways. Clean bench, two beams, both 4.5 m over their")
+	print("    own floor, the step between them at the midpoint.")
+	print("     gap    drop   legs held  mean catch tether  mean swing at release")
+	for gap in [7.4]:
+		for dy in [0.0, 1.2, 2.5, 3.7]:
+			var nh := 0
+			var n := 0
+			var ts := 0.0
+			var amp := 0.0
+			for teth in [2.0, 2.4, 2.8]:
+				var m := new_level()
+				banish(m)
+				set_terrain(m, [Vector2(-15, 0), Vector2(gap * 0.5, 0),
+					Vector2(gap * 0.5, dy), Vector2(40, dy)])
+				m.a_pos[6] = Vector2(0.0, -4.5); m.a_r[6] = 0.10
+				m.a_pos[8] = Vector2(gap, dy - 4.5); m.a_r[8] = 0.10
+				LEAP._wind_on(m, 6, teth, 1.8, deg_to_rad(6.0))
+				for t in 30:
+					step(m, m.body_pos, true, null)
+				if float(m.a_freelen[6]) < 0.0:
+					m.free()
+					continue
+				n += 1
+				var r := leap_search(m, 6, 8, null, [-0.5], [38])
+				amp += float(r["amp"])
+				if bool(r["held"]) and int(r["on"]) == 8:
+					nh += 1
+					ts += float(r["tether"])
+				m.free()
+			print("     %.1f m  %.1f m   %d / %d      %5.2f m            %3.0f deg"
+				% [gap, dy, nh, n, ts / maxf(nh, 1), amp / maxf(n, 1)])
+	print("")
+
+
+# ------------------------------------------------------- THE TERRACED LEVEL --
+# v2 of the lower tier. ONE line of beams, every one of them 4.5-5.0 m over the
+# floor it swings on. The floor steps down 2.5 m every 14.8 m, and the beam at
+# each lip is therefore ALSO only 2.0 m over the terrace behind it - which is
+# inside the standstill catch ceiling section 10 measured. There is no second
+# road: the "recovery spine" is the set of on-ramps to the only line there is.
+var use_v2 := false
+
+func apply_v2(m: Node2D) -> void:
+	set_terrain(m, [Vector2(-14, 0), Vector2(20, 0), Vector2(20, 3.0),
+		Vector2(34.8, 3.0), Vector2(34.8, 6.0), Vector2(49.6, 6.0),
+		Vector2(49.6, 9.0), Vector2(64, 9.0)])
+	m.t_a.append(Vector2(-14, -8)); m.t_b.append(Vector2(-14, 0))
+	m.t_a.append(Vector2(64, 9.0)); m.t_b.append(Vector2(64, -4.0))
+	m.t_n.clear()
+	for i in m.t_a.size():
+		var d: Vector2 = Vector2(m.t_b[i]) - Vector2(m.t_a[i])
+		m.t_n.append(Vector2(d.y, -d.x).normalized())
+	# indices kept so every existing tool still addresses them by name
+	var v := {0: Vector2(-2.0, -2.2), 1: Vector2(3.6, -2.2),
+		2: Vector2(10.4, -4.5),
+		4: Vector2(21.4, -2.0),      # ON-RAMP off the upper tier
+		6: Vector2(28.8, -1.5),      # over T1
+		5: Vector2(36.2, 1.0),       # ON-RAMP off T1
+		8: Vector2(43.6, 1.5),       # over T2
+		7: Vector2(51.0, 4.0),       # ON-RAMP off T2
+		10: Vector2(58.4, 4.5)}      # over T3
+	var rr := {0: 0.22, 1: 0.22, 2: 0.10, 4: 0.16, 6: 0.10, 5: 0.16, 8: 0.10,
+		7: 0.16, 10: 0.10}
+	for k in m.a_pos.size():
+		if v.has(k):
+			m.a_pos[k] = v[k]
+			m.a_r[k] = float(rr[k])
+		else:
+			m.a_pos[k] = Vector2(-900.0, -900.0)
+	m.goal_x = 62.0
+
+func new_level_v2() -> Node2D:
+	var m := new_level()
+	apply_v2(m)
+	return m
+
+func sec_v2() -> void:
+	print("13) THE TERRACED LOWER TIER, AND THE ONLY QUESTION THAT MATTERS:")
+	print("    A BODY DROPPED AT THE WORST POINT ON EACH FLOOR, CAN IT GET BACK?")
+	var m0 := new_level_v2()
+	print("    beam    x      y    over its own floor   over the floor 2.4 m")
+	print("                                             behind it (the throw)")
+	for k in [0, 1, 2, 4, 6, 5, 8, 7, 10]:
+		print("    A%-3d  %5.1f  %5.1f      %.2f m               %.2f m"
+			% [k, float(m0.a_pos[k].x), float(m0.a_pos[k].y),
+			   beam_height(m0, k), stand_height(m0, k)])
+	print("    terraces: upper y=0 to x=20, T1 y=3.0 to x=34.8, T2 y=6.0 to")
+	print("    x=49.6, T3 y=9.0 to the flag at x=62. Every step is 3.0 m - the")
+	print("    same drop the level already has at x=20, repeated.")
+	print("")
+	print("    THE DROP TEST. The body is put on the floor at the WORST x on each")
+	print("    terrace - the far side of the beam it just missed, so the whole")
+	print("    terrace has to be crawled - and then does nothing but the three")
+	print("    verbs. 'back in play' = hung on a beam with 4.5 m of air under it.")
+	print("      dropped at   crawl        throw        result                 total")
+	for d in [[-4.6, 4, 6], [20.4, 5, 8], [32.5, 5, 8], [35.2, 7, 10],
+			[47.3, 7, 10]]:
+		var dx: float = float(d[0])
+		var kr: int = int(d[1])
+		var kn: int = int(d[2])
+		var m := new_level_v2()
+		place(m, dx)
+		var L := Ledger.new()
+		L.maxx = m.body_pos.x
+		settle_ground(m, L, 90)
+		var t0 := L.ticks
+		var target: float = float(m.a_pos[kr].x) - 2.9
+		crawl_to(m, target, L, 6000)
+		var tcrawl := L.ticks - t0
+		var t1 := L.ticks
+		var r := ground_capture(m, kr, L)
+		var tthrow := L.ticks - t1
+		if not (bool(r["ok"]) and int(r["locked"]) == 1):
+			print("      x %5.1f      %5.1f s      %5.1f s      NO LOCK on A%d          -"
+				% [dx, tcrawl / 60.0, tthrow / 60.0, kr])
+			m.free()
+			continue
+		var t2 := L.ticks
+		var lr := leap_search(m, kr, kn, L)
+		var tleap := L.ticks - t2
+		var v := "missed A%d" % kn
+		if bool(lr["held"]) and int(lr["on"]) == kn:
+			v = "A%d->A%d %s, %.2f m" % [kr, kn, "LOCK"
+				if int(lr["locked"]) == 1 else "amber", float(lr["tether"])]
+		elif bool(lr["held"]):
+			v = "held A%d instead" % int(lr["on"])
+		elif not bool(lr["launched"]):
+			v = "NEVER LAUNCHED off A%d" % kr
+		print("      x %5.1f      %5.1f s      %5.1f s      %-22s %5.1f s"
+			% [dx, tcrawl / 60.0, tthrow / 60.0 + tleap / 60.0, v,
+			   L.ticks / 60.0])
+		m.free()
+	m0.free()
+	print("")
+
+func sec_v2run() -> void:
+	print("14) THE WHOLE TERRACED LEVEL, FROM THE REAL SPAWN, ONE ROUTE.")
+	use_v2 = true
+	var L := run_route([0, 1, 4, 6, 5, 8, 7, 10])
+	report(L, "THE TERRACED LINE")
+	use_v2 = false
+	print("")
+
+
+func sec_v2band() -> void:
+	print("15) THE TWO OUTCOMES OF AN ON-RAMP. Hung on each on-ramp at a chosen")
+	print("    tether: (a) leap at the next beam, (b) from the SAME state, just")
+	print("    OPEN THE HAND and let go. (b) is the whole point of hanging the")
+	print("    beam past a lip. On the flat level, releasing a recovery beam puts")
+	print("    the body back on the floor it threw from, at the x it threw from -")
+	print("    a fixed point, which is what a dead end IS. Here the beam overhangs")
+	print("    the next terrace down, so the failed catch is a slide, not a trap.")
+	print("      leg        tether  leap                      let go -> lands at")
+	for leg in [[4, 6], [5, 8], [7, 10]]:
+		var ka: int = int(leg[0])
+		var kb: int = int(leg[1])
+		for teth in [1.8, 2.4, 3.0]:
+			var m := new_level_v2()
+			LEAP._wind_on(m, ka, teth, 1.8, deg_to_rad(6.0))
+			for t in 30:
+				step(m, m.body_pos, true, null)
+			if float(m.a_freelen[ka]) < 0.0:
+				print("      A%-2d->A%-2d   %.2f m  (the start wrap did not take)"
+					% [ka, kb, teth])
+				m.free()
+				continue
+			var t0: float = float(m.a_freelen[ka])
+			var xthrow: float = float(m.a_pos[ka].x) - 2.9
+			var save := LEAP.save_state(m)
+			var r := leap_search(m, ka, kb, null, [-0.5, -0.8], [38])
+			var v := "missed"
+			if bool(r["held"]) and int(r["on"]) == kb:
+				v = "HELD A%d (%s, %.2f m)" % [kb, "LOCK"
+					if int(r["locked"]) == 1 else "amber", float(r["tether"])]
+			elif bool(r["held"]):
+				v = "held A%d instead" % int(r["on"])
+			elif not bool(r["launched"]):
+				v = "never launched"
+			elif bool(r["caught"]):
+				v = "caught then betrayed"
+			LEAP.load_state(m, save)
+			for t in 400:
+				step(m, m.body_pos, false, null)
+				if m.grounded and t > 120:
+					break
+			settle_ground(m, null, 40)
+			var lx: float = m.body_pos.x
+			var ly := floor_y(m, lx)
+			print("      A%-2d->A%-2d   %.2f m  %-24s x %.1f on the y=%.1f floor (%+.1f m from the throw)"
+				% [ka, kb, t0, v, lx, ly, lx - xthrow])
+			m.free()
+	print("")
+
+
+func sec_v2gap() -> void:
+	print("16) WHAT SPACING DOES A TERRACED LEG WANT? Section 7 measured spacing")
+	print("    between two beams at the SAME height over the SAME flat floor and")
+	print("    found 7.8 m at the peak. An on-ramp leg is not that: it starts on a")
+	print("    beam that overhangs a lip, with the tether a ground throw fixed.")
+	print("    A4 stays put, A6 moves, on the terraced level.")
+	print("      gap    held  caught  per tether (2.0 / 2.4 / 2.8 m)")
+	for gap in [5.0, 5.6, 6.2, 6.8, 7.4]:
+		var nh := 0
+		var nc := 0
+		var n := 0
+		var line := ""
+		for teth in [2.0, 2.4, 2.8]:
+			var m := new_level_v2()
+			m.a_pos[6] = Vector2(21.4 + gap, -1.5)
+			LEAP._wind_on(m, 4, teth, 1.8, deg_to_rad(6.0))
+			for t in 30:
+				step(m, m.body_pos, true, null)
+			if float(m.a_freelen[4]) < 0.0:
+				line += "  -"
+				m.free()
+				continue
+			n += 1
+			var r := leap_search(m, 4, 6, null, [-0.5, -0.8], [38])
+			if bool(r["held"]) and int(r["on"]) == 6:
+				nh += 1
+				line += "  L" if int(r["locked"]) == 1 else "  h"
+			elif bool(r["held"]):
+				line += " A%d" % int(r["on"])
+			elif not bool(r["launched"]):
+				line += "  x"
+			elif bool(r["caught"]):
+				line += "  p"
+			else:
+				line += "  ."
+			if bool(r["caught"]):
+				nc += 1
+			m.free()
+		print("      %.1f m   %d/%d    %d      %s" % [gap, nh, n, nc, line])
+	print("      (L = green lock, h = amber, p = caught then betrayed,")
+	print("       . = missed, x = never launched)")
+	print("")
+
+
+func sec_v2worst() -> void:
+	print("17) THE DROP TEST, DONE HONESTLY. Section 13 put the body straight onto")
+	print("    the worst x with place(), which lays the whip along the terrain by")
+	print("    x - and at the foot of a face that drapes one segment across the")
+	print("    step, the bug section 3 documents. So instead the body is placed in")
+	print("    clean middle of the terrace, walked BACKWARDS to the worst x with")
+	print("    the reverse gait, and only then does the clock start. Worst x is")
+	print("    the foot of the face: you have just fallen the whole step and the")
+	print("    entire terrace is in front of you.")
+	print("      terrace  worst x  crawl to the throw   throw to a LOCK   tether")
+	for c in [[3.0, 30.0, 20.4, 5], [6.0, 44.0, 35.2, 7]]:
+		var fy: float = float(c[0])
+		var mid: float = float(c[1])
+		var worst: float = float(c[2])
+		var kr: int = int(c[3])
+		var m := new_level_v2()
+		place(m, mid)
+		settle_ground(m, null, 90)
+		crawl_back(m, worst, null, 4000)
+		var xstart: float = m.body_pos.x
+		var L := Ledger.new()
+		L.maxx = m.body_pos.x
+		var target: float = float(m.a_pos[kr].x) - 2.9
+		crawl_to(m, target, L, 8000)
+		var tcrawl := L.ticks
+		var xafter: float = m.body_pos.x
+		var t1 := L.ticks
+		var r := ground_capture(m, kr, L)
+		var tthrow := L.ticks - t1
+		if not (bool(r["ok"]) and int(r["locked"]) == 1):
+			print("      y=%.1f    %.1f     %.1f s (%.1f m)       NO LOCK on A%d"
+				% [fy, xstart, tcrawl / 60.0, xafter - xstart, kr])
+			m.free()
+			continue
+		print("      y=%.1f    %.1f     %.1f s (%.1f m)       %.1f s            %.2f m"
+			% [fy, xstart, tcrawl / 60.0, xafter - xstart, tthrow / 60.0,
+			   float(r["tether"])])
+		print("               -> back in play %.1f s after landing, hanging on A%d"
+			% [L.ticks / 60.0, kr])
+		print("                  with %.2f m of air under it (the fast line is 4.5)"
+			% beam_height(m, kr))
+		m.free()
+	print("")
+
 # ------------------------------------------------------------------- entry --
 
 func _initialize() -> void:
@@ -1462,7 +1995,196 @@ func _initialize() -> void:
 		sec_sweep()
 	if want == "all" or want == "lip":
 		sec_lip()
+	if want == "all" or want == "ledge":
+		sec_ledge()
+	if want == "all" or want == "grade":
+		sec_grade()
+	if want == "all" or want == "shelf":
+		sec_shelf()
+	if want == "all" or want == "terrace":
+		sec_terrace()
+	if want == "all" or want == "descend":
+		sec_descend()
+	if want == "v2":
+		sec_v2()
+	if want == "v2run":
+		sec_v2run()
+	if want == "v2band":
+		sec_v2band()
+	if want == "v2gap":
+		sec_v2gap()
+	if want == "v2worst":
+		sec_v2worst()
 
 	print("total simulated: %d ticks (%.0f s of sim time), wall clock %.0f s"
 		% [sim_ticks, sim_ticks / 60.0, (Time.get_ticks_msec() - t0) / 1000.0])
 	quit(0)
+
+# ------------------------------------------------------------- the ledge --
+
+# The ONLY way to move while attached. Opening the hand takes you off the beam
+# that tick (main.gd: "HAND OPEN = OFF THE BEAM, THIS TICK"), so the lash gait
+# cannot be walked with a wrap on: its slack half-cycle would drop the beam.
+# What is left is the haul - grip closed, cursor pointed at the anchor. The arm
+# force is an internal pair, so with the rope taut it drags the BODY toward the
+# beam, which is the README's own "TAUT grip: bear load, haul". Hauling stops
+# the moment the feet leave the ground: after that the same cursor is reeling
+# the body up its own arm, which shortens the pendulum instead of seeding it.
+func haul_off(m: Node2D, k: int, L, cap := 240) -> Dictionary:
+	var t := 0
+	var x0: float = m.body_pos.x
+	var y0: float = m.body_pos.y
+	while t < cap and m.grounded and float(m.a_freelen[k]) >= 0.0:
+		var d: Vector2 = (Vector2(m.a_pos[k]) - m.body_pos).normalized()
+		step(m, m.body_pos + d * m.REACH, true, L)
+		t += 1
+	return {"t": t, "dx": m.body_pos.x - x0, "dy": m.body_pos.y - y0,
+		"on": float(m.a_freelen[k]) >= 0.0, "air": not m.grounded,
+		"x": m.body_pos.x, "y": m.body_pos.y}
+
+# Ride it. Grip closed, cursor held out at the anchor so the arm stays extended
+# and the rope stays taut - no pump, no cleverness, the thing a player does the
+# first time. Reports the swing the terrain alone paid for.
+func swing_watch(m: Node2D, k: int, n: int, dir: float) -> Dictionary:
+	var prev: Vector2 = m.body_pos
+	var pk := -999.0
+	var pkb := 999.0
+	var clr := 99.0
+	var lost := -1
+	var gnd := 0
+	for t in n:
+		if float(m.a_freelen[k]) < 0.0:
+			lost = t
+			break
+		var s := PUMP.swing_state(m, k, prev)
+		var th: float = rad_to_deg(float(s["theta"])) * dir
+		pk = maxf(pk, th)
+		pkb = minf(pkb, th)
+		clr = minf(clr, floor_y(m, m.body_pos.x) - m.body_pos.y - m.BODY_R)
+		if m.grounded:
+			gnd += 1
+		var d: Vector2 = (Vector2(m.a_pos[k]) - m.body_pos).normalized()
+		prev = m.body_pos
+		step(m, m.body_pos + d * m.REACH, true, null)
+	# how much of the whip is still lying on the upper tier behind the lip?
+	var drape := 0
+	for i in m.NP:
+		var p: Vector2 = m.pos[i]
+		if p.x < 20.05 and p.y > -0.20:
+			drape += 1
+	return {"fwd": pk, "back": pkb, "clr": clr, "lost": lost, "gnd": gnd,
+		"drape": drape}
+
+func sec_ledge() -> void:
+	print("9) THE HAUL-OFF - AN ENTRANCE MADE OF TERRAIN INSTEAD OF BEAMS.")
+	print("   Section 8 says the lip launcher fails, and section 2d says nothing")
+	print("   on the lower tier can launch at A6 either. Both failures are the")
+	print("   same one and it is not the beam, it is the FLOOR under it. A4 sits")
+	print("   0.4 m SHORT of the lip at x=20, so a body hanging under it is still")
+	print("   over the UPPER tier: it stands on its own feet and the pump has")
+	print("   nothing to swing in. Move the same beam a couple of metres PAST the")
+	print("   lip and NOTHING about the throw changes - it is still 2.2 m over the")
+	print("   floor you are standing on, still inside the standstill envelope -")
+	print("   but the hang is now over 5.2 m of open air.")
+	print("   AND THE STEP-OFF IS FREE ENERGY. The tether is fixed by where you")
+	print("   stood when it locked, so a throw made from the edge is already at")
+	print("   full stretch when the feet leave: the drop off the lip goes into the")
+	print("   swing as TANGENTIAL speed instead of into a radial yank. That is the")
+	print("   seed a 2.2 m beam can never give you, and the 5.2 m of air under the")
+	print("   lip beam is the room to pump it up.")
+	print("   'caught at' is where the body was the tick the wrap engaged, and")
+	print("   whether its feet were still on the ledge.")
+	print("")
+	var wins: Array = []
+	for xe in [21.0, 21.4, 21.8, 22.2, 22.6]:
+		print("   --- A4 moved to (%.1f, -2.2), %.2f m to A6 -----------------------"
+			% [xe, Vector2(xe, -2.2).distance_to(Vector2(27.2, -1.5))])
+		for xs in [18.8, 19.2, 19.6]:
+			var m := new_level()
+			m.a_pos[4] = Vector2(xe, -2.2)
+			m.a_r[4] = 0.11
+			place(m, xs)
+			var r := plan_throw(m, 4, null)
+			var cau := "caught at (%.1f,%+.2f) %s" % [float(r["ex"]), float(r["ey"]),
+				"feet on the ledge" if bool(r["egnd"]) else "already off the edge"]
+			if not (bool(r["ok"]) and int(r["locked"]) == 1):
+				print("   stand %.1f (lead %.1f)  no lock%s"
+					% [xs, xe - xs, "" if int(r["et"]) < 0 else " - %s, then it betrayed" % cau])
+				m.free()
+				continue
+			var tt: float = float(r["tether"])
+			var h := haul_off(m, 4, null)
+			if not bool(h["on"]):
+				print("   stand %.1f (lead %.1f)  LOCK %.2f m, %s, then lost it hauling"
+					% [xs, xe - xs, tt, cau])
+				m.free()
+				continue
+			var snap := LEAP.save_state(m)
+			var w := swing_watch(m, 4, 300, 1.0)
+			LEAP.load_state(m, snap)
+			var lr := leap_search(m, 4, 6, null, [-0.5, -0.8], [38])
+			var v := "missed"
+			if bool(lr["held"]) and int(lr["on"]) == 6:
+				v = "HELD A6 (%s, tether %.2f m)" % [
+					"LOCK" if int(lr["locked"]) == 1 else "amber", float(lr["tether"])]
+			elif bool(lr["held"]):
+				v = "held A%d instead" % int(lr["on"])
+			elif not bool(lr["launched"]):
+				v = "never launched"
+			elif bool(lr["caught"]):
+				v = "caught A6 then betrayed"
+			print("   stand %.1f (lead %.1f)  LOCK %.2f m, %s" % [xs, xe - xs, tt, cau])
+			print("                        haul %+.2f m / %.1f s -> %s; riding it: %+.0f deg forward, floor clear %.2f m%s"
+				% [float(h["dx"]), float(h["t"]) / 60.0,
+				   "AIRBORNE at x %.1f" % float(h["x"]) if bool(h["air"]) else "still standing",
+				   float(w["fwd"]), float(w["clr"]),
+				   ", dropped the beam at %.1f s" % (float(w["lost"]) / 60.0)
+					if int(w["lost"]) >= 0 else ""])
+			print("                        A4 -> A6: rel %2.0f off a %3.0f deg swing: %s  [%d cand]"
+				% [float(lr["rel"]), float(lr["amp"]), v, int(lr["cands"])])
+			if bool(lr["held"]) and int(lr["on"]) == 6 and int(lr["locked"]) == 1:
+				wins.append([xe, xs, float(lr["tether"])])
+			m.free()
+	print("")
+	print("   THE WHOLE LINE, ENTERED THROUGH THE DOOR THAT JUST OPENED. Each")
+	print("   winner above is flown on: A4 -> A6 -> A8 -> A10 -> A12 -> A13, one")
+	print("   continuous trajectory from the standstill throw on the upper tier.")
+	print("   'feet' counts ticks of ground contact in flight - the fast line's")
+	print("   whole promise is that there are none.")
+	print("     A4 at  stand   legs held   x reached   time    feet   per leg")
+	for wq: Array in wins:
+		var xe: float = float(wq[0])
+		var xs: float = float(wq[1])
+		var m := new_level()
+		m.a_pos[4] = Vector2(xe, -2.2)
+		m.a_r[4] = 0.11
+		place(m, xs)
+		var L := Ledger.new()
+		L.maxx = m.body_pos.x
+		var r := plan_throw(m, 4, L)
+		if not (bool(r["ok"]) and int(r["locked"]) == 1):
+			m.free()
+			continue
+		haul_off(m, 4, L)
+		var cur := 4
+		var line := ""
+		var ok := 0
+		var feet := 0
+		for kb in [6, 8, 10, 12, 13]:
+			var lr := leap_search(m, cur, kb, L)
+			feet += int(lr["air_gnd"])
+			if bool(lr["held"]) and int(lr["on"]) == kb:
+				ok += 1
+				line += " A%d(%s,%.1fm)" % [kb,
+					"L" if int(lr["locked"]) == 1 else "p", float(lr["tether"])]
+				cur = kb
+			elif bool(lr["held"]):
+				line += " ->A%d!" % int(lr["on"])
+				cur = int(lr["on"])
+			else:
+				line += " A%d:%s" % [kb, str(lr["why"])]
+				break
+		print("     %.1f   %.1f     %d of 5      %5.1f m    %4.1f s  %3d  %s"
+			% [xe, xs, ok, L.maxx, L.ticks / 60.0, feet, line])
+		m.free()
+	print("")

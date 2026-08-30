@@ -375,12 +375,25 @@ func _build_level() -> void:
 		[ 3.6, -2.2, 0.22],   # school: pump, release, chain a second catch
 		[10.4, -4.5, 0.10],   # FAST - the first beam your feet cannot reach
 		[15.6, -2.2, 0.20],   # recovery, and the run-up to the lip
-		[19.6, -2.2, 0.11],   # THE LIP LAUNCHER: 2.2 m over this tier but
-		                      # 5.2 m over the next, because the floor falls
-		                      # away at x=20. Catch it close and you dangle
-		                      # over the drop with nothing in range; catch it
-		                      # FAR and you get a 4 m tether swinging in 5 m
-		                      # of open air. Same beam, two outcomes.
+		[21.4, -2.2, 0.11],   # THE DOOR onto the fast line. Hung 1.4 m PAST
+		                      # the lip at x=20, so it has TWO heights: 2.2 m
+		                      # over the tier you THROW from and 5.2 m over
+		                      # the one you SWING in. Nothing else in the
+		                      # level has two, and that is the whole trick -
+		                      # a beam cannot be both catchable from a
+		                      # standstill (needs <= ~2.4 m) and launchable
+		                      # (needs > tether + 1.58 m) above the SAME
+		                      # floor. The contradiction is a property of
+		                      # flat ground, not of beams; a step dissolves
+		                      # it. The 3 m drop was already here - the beam
+		                      # was just parked 0.4 m on the wrong side.
+		                      # Technique: stand in the last metre before the
+		                      # drop and throw out over the void. The tether
+		                      # is fixed at handle-to-wrap, and your handle is
+		                      # out ahead of you, so the rope comes up shorter
+		                      # than you stand and holding it hauls you off
+		                      # the edge - arriving as an 80 degree swing
+		                      # rather than a yank, with no pump at all.
 		# LOWER TIER (floor y=3.0): a slow recovery spine at 2.2 m, and the
 		# fast line at 4.5 m - which is the minimum height a 4 m tether can
 		# swing under without the arc going underground.
@@ -1100,6 +1113,16 @@ func _draw() -> void:
 			# would.
 			var engaged := a_freelen[k] >= 0.0
 			var locked := engaged and a_locked[k] == 1
+			# A wrap made from far away pinches on its own draped TAIL, so it
+			# classifies green and then tears off the moment a real swing
+			# straightens that tail out. On flat ground a dead hang never
+			# loads it enough to show; off the door it decides everything.
+			# If there is less chain past the wrap than a pinch needs, say so
+			# now - present state, not prediction: a tell, not a trap.
+			if locked and a_pinidx[k] >= 0:
+				var tail: float = cum_len[NP - 1] - cum_len[a_pinidx[k]]
+				if tail < PINCH_TURN * TAU * (a_r[k] + 0.02):
+					locked = false
 			var col := Color(0.55, 0.55, 0.60)              # merely touching
 			if locked:
 				col = Color(0.3, 0.9, 0.45)                 # pinched: it holds

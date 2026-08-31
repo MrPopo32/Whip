@@ -279,6 +279,11 @@ var external_drive := false           # set true by the headless test harness
 
 # nodes
 var cam: Camera2D
+var cam_st := {}                      # the camera law's own state. Rendering,
+                                      # not simulation: it is in SNAP_SKIP, and
+                                      # nothing in it can reach a sim variable.
+var zone: Node2D                      # the working-zone ring, screen space
+var mouse_owned := false              # this session hid and confined the pointer
 var hud: Label
 var status: Label
 var sfx_crack: AudioStreamPlayer
@@ -393,11 +398,14 @@ func _ready() -> void:
 	_boot_session()   # resume the run in progress, or record / replay a tape
 
 	cam = Camera2D.new()
-	cam.position_smoothing_enabled = true
-	cam.position_smoothing_speed = 4.0
+	# NO position_smoothing. The law does its own, and does it with the
+	# follower's own lag cancelled so the lead authored is the lead delivered;
+	# a second smoother in series would put the lead straight back to zero,
+	# which is what the shipped camera was doing by accident.
+	cam.position_smoothing_enabled = false
 	add_child(cam)
 	cam.make_current()
-	cam.position = (body_pos + Vector2(0.0, -1.4)) * PPM
+	cam_reinit()
 
 	var canvas := CanvasLayer.new()
 	add_child(canvas)
@@ -412,6 +420,31 @@ func _ready() -> void:
 	status.add_theme_font_size_override("font_size", 16)
 	status.add_theme_color_override("font_color", Color(0.62, 0.66, 0.74))
 	canvas.add_child(status)
+
+	# THE WORKING ZONE, DRAWN. The cursor is anchored to the screen rather than
+	# run back through the camera, so the OS pointer and the crosshair the game
+	# draws no longer coincide once the camera leads or steps down a tier -
+	# measured, they would separate by up to 240 px. Two pointers in a precision
+	# game is worse than none, so the OS one goes (below) and the game's own
+	# crosshair and hand become the only cursor.
+	#
+	# But a hidden pointer whose zone you cannot see is a control you can lose
+	# the origin of: past the reach rim the crosshair is pinned and stops
+	# telling you where your hand is. So the zone is drawn where it actually is
+	# - a ring of exactly REACH, 138 PHYSICAL pixels across at any window size
+	# or zoom, nailed to the same patch of desk forever - and past the rim the
+	# hand itself is drawn with the slack between them. Present state only:
+	# where your hand is this instant, never where it is going.
+	zone = Node2D.new()
+	zone.draw.connect(_draw_zone)
+	canvas.add_child(zone)
+	# Only a real windowed session takes the mouse - the same rule the save
+	# obeys - so no probe and no replay ever grabs the player's pointer.
+	# CONFINED, never CAPTURED: capture gives relative motion only and would
+	# destroy the position mapping this whole section exists to protect.
+	if save_enabled and DisplayServer.get_name() != "headless":
+		Input.set_mouse_mode(Input.MOUSE_MODE_CONFINED_HIDDEN)
+		mouse_owned = true
 
 	sfx_crack = _player(_make_noise_wav(0.09, 0.018, 26111), -4.0, 2)
 	sfx_tick = _player(_make_sine_wav(0.05, 880.0), -8.0, 3)
@@ -603,13 +636,246 @@ func _reset() -> void:
 	crack_flash = 0.0
 	slipping = false
 	_av_reset()
-	if cam != null:
-		cam.position = (body_pos + Vector2(0.0, -1.4)) * PPM
-		cam.reset_smoothing()
+	cam_reinit()
 	run_ticks = 0
 	finished = false
 	falls = 0
 	tick_count = 0
+
+# ---- CAMERA: a pure function of the body and the level ----
+# WHAT THE CAMERA IS ALLOWED TO KNOW, and this is the whole list: where the body
+# is, how fast the body is going, and an authored table of volumes. Not the
+# rope. A frame driven by the rope pumps with the rope, and a ZOOM driven by the
+# rope is worse than that: changing scale mid-stroke regrades the apparent speed
+# of the wave, which is the one reading the player has spent hours learning. It
+# is also the shape of an assist - a camera that widened exactly when your
+# momentum was enough to clear the next gap would be a feasibility oracle, and
+# this game does not tell you whether you are going to make it.
+#
+# THIS IS ENFORCED, NOT REQUESTED. tests/cam_gate.gd C1 reads the source between
+# these two markers and fails if any of 23 rope identifiers appears inside them.
+# The law is written as static functions on purpose: a static func cannot reach
+# instance state, so the rope arrays are not in scope to be read by accident,
+# and the only way to reintroduce the bug is to pass one in as an argument -
+# which the gate then sees.
+const VIEW_W := 1600.0 / PPM          # m across the frame at zoom 1
+const VIEW_H := 900.0 / PPM           # m down   the frame at zoom 1
+
+# THE VOLUMES: x0, x1, tier floor y, authored zoom. One per tier of the
+# staircase, spanning the whole playable width from the left wall to the far
+# wall. The vertical is a function of WHICH VOLUME the body is in - that is, of
+# its x - and never of its y. That is what makes a 3 m drop a fixed shot the
+# player falls THROUGH: a fall barely changes x, so the camera does not move
+# vertically at all during one, the floor line holds still, and height and
+# speed stay readable against it. A camera that chased the fall would show a
+# floor rushing up at a body that appears not to move, which destroys exactly
+# the two readings a 3 m drop asks you to make.
+#
+# EVERY ZOOM IS 1.00, and that is a measurement, not an omission. The largest
+# must-see box in the game is the F1->F2 leap at 11.1 x 7.1 m against a
+# 26.67 x 15.00 m frame; every volume has 35-66% of unused headroom and not one
+# is short. The rope is bounded to a 6.40 m circle around the body by
+# construction (5.25 m of chain + 1.15 m of arm), so nothing DYNAMIC can ever
+# demand a wider view - only static authored level features could, and none
+# here does. Read the column as a budget: the moment an edit puts a beam more
+# than ~13 m ahead or ~11 m of vertical content inside one volume, it stops
+# being optional. The mechanism ships regardless, under the rate cap below.
+const CAM_VOLS := [
+	[-14.0, 19.0,  0.0, 1.00],   # V0 the school
+	[ 19.0, 29.0,  3.0, 1.00],   # V1 tier 1
+	[ 29.0, 39.0,  6.0, 1.00],   # V2 tier 2
+	[ 39.0, 47.0,  9.0, 1.00],   # V3 tier 3 (short - the tightest volume)
+	[ 47.0, 62.0, 12.0, 1.00],   # V4 tier 4 / the run-out to the flag
+]
+# Shelf: the camera centre sits this far above the tier's floor. Uniform only
+# because the level is uniform - every tier is the same 3 m step with beams at
+# the same two heights - and authored per volume so a tier that is not gets its
+# own number. What -2.2 buys per tier: the top edge 4.3 m clear above the door
+# beam (a thrown tip measures up to 4.51 m above the body), the bottom edge
+# 2.5 m below the next tier down, and a standing body at 63% of frame height.
+const CAM_SHELF := -2.2
+const CAM_HYST := 1.5                 # m of hysteresis either side of a boundary
+const CAM_TAU_V := 0.70               # s, low-pass on body velocity BEFORE use
+const CAM_TAU_P := 0.25               # s, the horizontal follower's own pole
+const CAM_LEAD := 0.40                # s of body velocity, forward
+const CAM_LMAX := 3.2                 # m: 12% of the view = body at 38% back
+const CAM_LBACK := 1.2                # m, and deliberately ASYMMETRIC
+const CAM_WY := 2.2                   # rad/s, critically damped onto the shelf
+const CAM_EDGE := 2.0                 # m the body may never come within of an edge
+const CAM_WZ := 2.0                   # rad/s, critically damped on ln(zoom)
+const CAM_ZRATE := 0.08               # 1/s, hard cap on |d ln(zoom)/dt|
+
+static func cam_vol(x: float) -> int:
+	for i in CAM_VOLS.size():
+		if x < float(CAM_VOLS[i][1]):
+			return i
+	return CAM_VOLS.size() - 1
+
+static func cam_new(b: Vector2) -> Dictionary:
+	var i := cam_vol(b.x)
+	return {"vlp": Vector2.ZERO, "x": b.x,
+		"y": float(CAM_VOLS[i][2]) + CAM_SHELF, "vy": 0.0, "vi": i,
+		"lz": log(float(CAM_VOLS[i][3])), "vz": 0.0}
+
+static func cam_scale(st: Dictionary) -> float:
+	return exp(float(st["lz"]))
+
+static func cam_law(st: Dictionary, b: Vector2, v: Vector2,
+		dt: float) -> Vector2:
+	# HORIZONTAL. The velocity is low-passed first: the raw body velocity is a
+	# substep difference and goes straight into the frame as shake otherwise
+	# (measured: 3.58 px of single-frame departure on the crawl alone, against
+	# 0.18 px through this pole). 0.70 s develops 63% of the lead inside a
+	# 1.0-1.5 s flight, which is the constraint that sets it.
+	var vlp: Vector2 = st["vlp"]
+	vlp += (v - vlp) * (dt / CAM_TAU_V)
+	st["vlp"] = vlp
+	# The +CAM_TAU_P*vlp.x term cancels the follower's OWN lag, so the lead
+	# authored is the lead delivered. Without it a 0.25 s lookahead against a
+	# 0.25 s pole is algebraically zero - which is precisely what the shipped
+	# camera was: measured p50 0.00 m, p90 0.02 m of net lead over 7679 ticks,
+	# with the lookahead's only surviving contribution being the shake.
+	# CAM_LBACK is asymmetric because the route is one-way by construction and a
+	# pumping body reverses twice a swing; a symmetric lead would put 6.4 m of
+	# frame travel into every pump cycle.
+	var lead := clampf(CAM_LEAD * vlp.x, -CAM_LBACK, CAM_LMAX)
+	var tx := b.x + lead + CAM_TAU_P * vlp.x
+	st["x"] = float(st["x"]) + (tx - float(st["x"])) * (dt / CAM_TAU_P)
+	# WHICH VOLUME, with hysteresis: the shelf steps down when the body first
+	# passes the lip, and back only if it returns well past it. Measured over
+	# every trace the game can produce: exactly one step per drop, no flapping.
+	var vi: int = int(st["vi"])
+	while vi + 1 < CAM_VOLS.size() and b.x > float(CAM_VOLS[vi][1]) + CAM_HYST:
+		vi += 1
+	while vi > 0 and b.x < float(CAM_VOLS[vi][0]) - CAM_HYST:
+		vi -= 1
+	st["vi"] = vi
+	# THE FALLBACK, and it is always live rather than a mode with an edge to
+	# fall off: the body may never come within CAM_EDGE of a frame edge. The
+	# committed fallback was "frame the body-and-tip bounding box", but that box
+	# can never demand a zoom change - the rope is inside a 6.40 m circle by
+	# construction - so it collapses to exactly this one clamp. If an expert
+	# leaves the authored graph, swings back up a tier or catches something no
+	# volume was written for, this takes the camera off the shelf and back onto
+	# the body continuously, with no discontinuity to see. On this level it is a
+	# net that never fires: worst measured approach to an edge is 3.09 m.
+	var ty := float(CAM_VOLS[vi][2]) + CAM_SHELF
+	var half := VIEW_H * 0.5 / cam_scale(st) - CAM_EDGE
+	ty = clampf(ty, b.y - half, b.y + half)
+	# VERTICAL: critically damped, not one-pole. A one-pole step is fastest at
+	# t=0 and this step is 3.0 m; fired as the body is hauled off the lip, it
+	# starts as you commit and finishes as you land.
+	var acc := CAM_WY * CAM_WY * (ty - float(st["y"])) \
+		- 2.0 * CAM_WY * float(st["vy"])
+	st["vy"] = float(st["vy"]) + acc * dt
+	st["y"] = float(st["y"]) + float(st["vy"]) * dt
+	return Vector2(float(st["x"]), float(st["y"]))
+
+static func cam_zoom_step(st: Dictionary, target: float, dt: float) -> float:
+	# Critically damped on ln(zoom), so a step is scale-symmetric, and then a
+	# HARD cap on the rate. 8%/s is the budget: a 300 ms stroke never sees more
+	# than 2.4% of scale change. A consequence worth writing down, because the
+	# committed design did not state it - a critically damped step of relative
+	# size A peaks at 0.368*A*w, so at w=2.0 under an 0.08/s cap the cap binds
+	# for any step over 11%. No two ADJACENT volumes may differ by more than
+	# that, or the blend silently stops being critically damped and becomes a
+	# slew-limited ramp with a corner at each end. With the column flat this is
+	# vacuous, which is one more reason to keep it flat.
+	var lt := log(target)
+	var lz := float(st["lz"])
+	var vz := float(st["vz"])
+	vz += (CAM_WZ * CAM_WZ * (lt - lz) - 2.0 * CAM_WZ * vz) * dt
+	vz = clampf(vz, -CAM_ZRATE, CAM_ZRATE)  # the cap is on the RATE, not the target
+	lz += vz * dt
+	st["lz"] = lz
+	st["vz"] = vz
+	return exp(lz)
+
+func cam_apply(dt: float) -> void:
+	# The only non-static function here, and all it does is hand the law a body,
+	# a velocity and a fixed dt, then write the result to the node.
+	if cam == null:
+		return
+	if cam_st.is_empty():
+		cam_st = cam_new(body_pos)
+	var c := cam_law(cam_st, body_pos, _body_vel(), dt)
+	var z := cam_zoom_step(cam_st, float(CAM_VOLS[int(cam_st["vi"])][3]), dt)
+	cam.position = c * PPM
+	cam.zoom = Vector2(z, z)
+
+func cam_reinit() -> void:
+	# The body has jumped - spawn, R, or a save being resumed - so the camera
+	# starts ON its shelf rather than sliding onto it from wherever it was.
+	cam_st = cam_new(body_pos)
+	if cam == null:
+		return
+	var z := float(CAM_VOLS[int(cam_st["vi"])][3])
+	cam.position = Vector2(float(cam_st["x"]), float(cam_st["y"])) * PPM
+	cam.zoom = Vector2(z, z)
+# ---- end camera ----
+
+# ---- CURSOR: the mouse reaches the world through a constant, not the camera ----
+# THE TRAP THIS SECTION EXISTS TO SHUT. get_global_mouse_position() is the mouse
+# run BACKWARDS THROUGH THE CAMERA, so the metres-per-pixel of the control is
+# whatever the camera happens to be doing. This is a position-mapped control in
+# the Getting Over It line: the whole skill is motor memory of a stroke. A
+# sensitivity that shifted under the player would not read as "the camera
+# changed", it would read as the whip getting worse - silently, and after they
+# had already learned the old one.
+#
+# So the camera is REMOVED FROM THE EXPRESSION rather than slowed down:
+#
+#     cursor = body + (mouse_px - anchor_px) * m_per_px
+#
+# There is no get_global_mouse_position anywhere in this file, and nothing the
+# camera owns is in this path, so the mapping cannot drift with anything the
+# camera does. Measured through the real canvas transform (tests/cam_gate.gd
+# C2): 1.66667 m per 100 physical px of mouse at every zoom from 0.70 to 1.25
+# and at every window size, identical to the last bit. Through the camera the
+# same sweep runs 1.333-2.381 m - a 79% swing in the sensitivity of a
+# position-mapped control, and the reach circle's 69 px rim shrinking to 48.
+#
+# CAMERA POSITION, not just zoom, is the load-bearing half. The framing above
+# leads by up to 3.2 m and lets the body ride from 21% to 73% of frame height;
+# a camera-mapped cursor would sweep a STATIONARY HAND 4.5 m across and 7.8 m
+# down, against a reach radius of 1.15 m. That has never shown up before only
+# because the shipped camera never left the body.
+const PPM_INPUT := 60.0               # px per metre of MOUSE TRAVEL. A
+                                      # constant, and deliberately not PPM:
+                                      # they are equal today by choice, not by
+                                      # identity, and the render scale is free
+                                      # to move without touching the control.
+# The anchor is the screen point at which the handle target sits on the body. It
+# is 1.4 m below centre because that is where the shipped camera put the body
+# (cam = body + (0,-1.4), measured p50 0.00 m, p99 0.08 m of departure over the
+# whole corpus), so this mapping REPRODUCES the control every hour of practice
+# was done against - and then keeps reproducing it once the camera starts
+# leading and stepping, which is exactly when the old one would have drifted.
+const CURSOR_ANCHOR := Vector2(0.0, 1.4 * 60.0)   # design px, from view centre
+
+static func cursor_of(body: Vector2, mouse_px: Vector2, anchor_px: Vector2,
+		m_per_px: float) -> Vector2:
+	return body + (mouse_px - anchor_px) * m_per_px
+
+func cursor_anchor_px() -> Vector2:
+	return get_viewport().get_visible_rect().size * 0.5 + CURSOR_ANCHOR
+
+func cursor_m_per_px() -> float:
+	# get_mouse_position() speaks the project's 1600x900 DESIGN pixels: the
+	# engine has already divided the window's stretch back out of the event
+	# (measured - tests/cam_units.gd: the same physical pointer reads 949 px in
+	# a 1600-wide window and 1186.25 px in a 1280-wide one, exactly 1/0.8).
+	# Multiplying the stretch back in pins the control to PHYSICAL pixels, so a
+	# smaller window is a smaller picture of the same world rather than a 25%
+	# sensitivity change - the same bug as zoom, through a different door.
+	# get_final_transform() is that stretch and nothing else: a Camera2D writes
+	# canvas_transform, which is not part of it.
+	return get_viewport().get_final_transform().get_scale().x / PPM_INPUT
+
+func cursor_now() -> Vector2:
+	return cursor_of(body_pos, get_viewport().get_mouse_position(),
+		cursor_anchor_px(), cursor_m_per_px())
+# ---- end cursor ----
 
 # ------------------------------------------------------------------- input --
 func _input(event: InputEvent) -> void:
@@ -630,16 +896,18 @@ func _physics_process(_d: float) -> void:
 		return
 	if play_on:
 		_play_tick()
-		cam.position = (body_pos + Vector2(0.0, -1.4) + _body_vel() * 0.25) * PPM
+		cam_apply(DT)
 		return
 	if play_done:
 		_av_hush()                    # ...but it does not hold its last NOISE
 		return                        # a finished replay holds its last frame
-	var mouse := get_global_mouse_position() / PPM
 	var grip := Input.is_key_pressed(KEY_SPACE) \
 		or Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT)
-	step_tick(mouse, grip)
-	cam.position = (body_pos + Vector2(0.0, -1.4) + _body_vel() * 0.25) * PPM
+	step_tick(cursor_now(), grip)
+	# Stepped with the FIXED tick, not the frame delta: the camera advances once
+	# per simulation tick, so the same run frames identically every time it is
+	# replayed, and a dropped frame cannot smear the shot.
+	cam_apply(DT)
 	save_due -= 1
 	if save_enabled and save_due <= 0:
 		save_due = AUTOSAVE_TICKS
@@ -647,6 +915,8 @@ func _physics_process(_d: float) -> void:
 
 func _process(d: float) -> void:
 	queue_redraw()
+	if zone != null and mouse_owned:
+		zone.queue_redraw()
 	# The DRIVERS are sampled once a tick (they are tick quantities); the
 	# smoothing and the writes to the mixer happen per FRAME, so a voice glides
 	# rather than stepping at 60 Hz. This is a smoothing of the OUTPUT only -
@@ -1569,6 +1839,35 @@ func _draw() -> void:
 	draw_line(tp + Vector2(-6, 0), tp + Vector2(6, 0), Color(1, 1, 1, 0.45), 1.5)
 	draw_line(tp + Vector2(0, -6), tp + Vector2(0, 6), Color(1, 1, 1, 0.45), 1.5)
 
+func _draw_zone() -> void:
+	# SCREEN SPACE, on the HUD layer - so this ring is the mouse's own ruler and
+	# not the world's, and it does not move, scale or drift with the camera. Its
+	# radius is REACH converted through the SAME m_per_px the control uses, so
+	# it is always exactly 138 physical pixels across: the whole control
+	# surface, drawn at 1:1 with the desk.
+	if zone == null or not mouse_owned:
+		return
+	var mpp := cursor_m_per_px()
+	var a := cursor_anchor_px()
+	var rim := REACH / mpp
+	var off := get_viewport().get_mouse_position() - a
+	var d := off.length()
+	# NOTHING IS DRAWN WHILE THE HAND IS INSIDE THE RIM, and that is the whole
+	# rule. Inside it the crosshair the game already draws IS the hand, 1:1 and
+	# to scale, so a permanent ring would add no reading and would be misread as
+	# an object in the world (it was, when it was always on - it sat next to the
+	# body and looked like a beam). Past the rim the crosshair is pinned and has
+	# stopped telling the truth about where the hand is, and once the pointer is
+	# hidden nothing else recovers that. So the zone appears exactly when it
+	# starts carrying information, and fades up with how far past you are.
+	if d <= rim:
+		return
+	var f := clampf((d - rim) / rim, 0.0, 1.0)   # a whole radius past = full
+	zone.draw_arc(a, rim, 0.0, TAU, 48, Color(1, 1, 1, 0.05 + 0.10 * f), 1.0)
+	zone.draw_line(a + off * (rim / d), a + off,
+		Color(1, 1, 1, 0.06 + 0.14 * f), 1.0)
+	zone.draw_circle(a + off, 2.5, Color(1, 1, 1, 0.10 + 0.25 * f))
+
 # ------------------------------------------------------------------- audio --
 # WHY AUDIO IS NOT POLISH HERE. A real whip crack is learned by ear, because the
 # tip moves faster than the eye can follow, and this game is about reading a
@@ -2142,6 +2441,11 @@ const AUTOSAVE_TICKS := 30            # half a second: the most a crash can cost
 # every planning candidate it restores carries one field from another timeline
 # and nothing anywhere says so. Declare a var and it is in the snapshot.
 const SNAP_SKIP := ["external_drive", "save_enabled", "save_path", "save_due",
+	# THE CAMERA IS NOT THE SIMULATION either, and by the same argument as the
+	# audio below it: cam_st is a pure function of a finished tick's body
+	# position and velocity, it feeds nothing back, and a save that carried it
+	# would be a save whose key set no longer matched the tapes on disk.
+	"cam_st", "mouse_owned",
 	"rec_on", "rec_path", "rec_cur", "rec_grip", "rec_chk", "rec_start",
 	"rec_note", "rec_cen", "rec_prev", "rec_rst",
 	"play_on", "play_done", "play_tape", "play_at",
@@ -2613,6 +2917,11 @@ func _notification(what: int) -> void:
 	# measured, it left 8 objects held at exit, which the engine reports as a
 	# leak and which this project does not otherwise print.
 	_av_stop()
+	# and it gives the pointer back, for the same reason: a game that is leaving
+	# does not keep the player's mouse hidden inside a window that is closing.
+	if mouse_owned:
+		mouse_owned = false
+		Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
 	if not save_enabled:
 		return
 	save_to(save_path)

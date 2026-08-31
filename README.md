@@ -16,7 +16,7 @@ Open the project in Godot 4.7 and press F5, or from a terminal:
 
 | Input | Action |
 |---|---|
-| Mouse | Move the handle (clamped to a reach circle around the body) |
+| Mouse | Move the handle (clamped to a reach circle around the body). The OS pointer is hidden and confined; the crosshair the game draws is the only cursor |
 | **HOLD** Space or LMB | TAUT grip — bear load, haul, swing |
 | release | SLACK — throw, shape waves, crack |
 | R | Restart (discards the run) |
@@ -37,18 +37,25 @@ Open the project in Godot 4.7 and press F5, or from a terminal:
   That loop is the whole game.
 - Crack the whip (a sharp stroke reversal) — the bang is the skill bell.
 
-## The traverse (~75 m, two tiers)
+## The traverse (76 m, five tiers, 12 m of descent)
 
-**Upper tier** — five fat beams 2.5 m up: learn to throw, wrap, hang, pump,
-crack. It ends at a drop.
+A staircase that runs DOWNHILL, floors at y = 0, 3, 6, 9, 12. Every drop faces
+along the route, so the lash gait - which crawls flat ground at ~0.44 m/s and
+cannot climb even a 20 degree slope - can always shuffle on to the next door
+beam. Falling costs ground and time; it never costs the run.
 
-**Lower tier** — after the drop, alternating beams:
-- **LOW beams** (2.5 m over the floor) can always be caught from a standstill.
-  That is the safety contract: no fall is ever terminal, you just lose the
-  height and momentum you had earned.
-- **HIGH beams** (5.2 m over the floor) are out of reach from the ground.
-  They are the skill ceiling — catchable only from the apex of a swing, and
-  the only place you get a real hanging arc instead of a feet-dragging pump.
+**The school** (home tier, x -14..20) - three fat beams 2.2 m up: throw, wrap,
+grip, hang, pump, release, chain a second catch. It ends at a lip.
+
+**DOOR beams** - one per lip, 1.4 m past it. 2.2 m over the tier you throw
+from and 5.2 m over the tier you swing in: the only beams you can both catch
+cold and launch from. That is the safety contract - no fall is ever terminal.
+
+**FAST beams** - 4.5 m over the tier beneath them, 7.8 m apart. Out of reach
+from the ground, catchable only from the apex of a swing. They are the skill
+ceiling, and the only place you get a real hanging arc instead of a
+feet-dragging pump. Both numbers come from the route bot: 4/4 legs at 7.8 m
+of gap, 3/4 at 8.6, 0/4 at 10.5; 4/4 at 4.5 m of height, 2/4 at 4.0, 0/4 at 3.0.
 
 Everything about the layout is measured, not assumed — see the probes below.
 
@@ -169,6 +176,110 @@ a run that was snapshotted, that snapshot restored from memory, and that
 snapshot written to a file and loaded into a sim that never played those ticks
 must all produce one hash.
 
+## The camera, and the mouse it must never touch
+
+The level is a descending staircase — a home tier, then four 3 m drops — so the
+camera is **authored per volume**, one volume per tier, and the vertical is a
+function of *which volume the body is in*, i.e. of its **x**, never of its y.
+
+That last clause is the whole design. **A fall barely changes x, so during a
+3 m drop the camera does not move vertically at all.** The floor line holds
+still and you read your height and your speed against it. A camera that chased
+the fall would show a floor rushing up at a body that appears not to move,
+which destroys exactly the two readings a drop is asking you to make. Measured
+over the corpus and the leaps: the shipped-before camera's vertical range on
+the door tape was 3.76 m and on the F1→F2 leap 6.92 m (it rode the swoop);
+this one is **3.00 m and 2.94 m — one authored step, and nothing else**. On
+every ground-only tape it is **0.00 m** against 0.71–0.97 m of pump bob.
+
+| | |
+|---|---|
+| **volumes** | 5, spanning the left wall to the far wall, boundaries at lip−1.0 with ±1.5 m of hysteresis. Measured: exactly one step per drop, no flapping, on every trace |
+| **shelf** | camera centre at tier floor − 2.2 m. Standing puts the body at 63% of frame height, hanging on a door beam at 47%, swooping at 70% — **the upward bias while hanging costs no state to decide, because nothing decides it** |
+| **lead** | 0.40 s of *low-passed body velocity* (τ 0.70 s), clamped −1.2 / +3.2 m, with the follower's own lag cancelled so the lead you author is the lead you get. Deliberately asymmetric: the route is one-way, and a pumping body reverses twice a swing |
+| **zoom** | authored **1.00 in every volume**, blended critically damped on ln(zoom) under a hard **8%/s** rate cap |
+| **fallback** | one always-live clamp: the body may never come within 2.0 m of a frame edge. No mode, no switch, no edge to fall off |
+
+**Zoom is authored 1.00 everywhere and that is a measurement, not an
+omission.** The rope is bounded to a 6.40 m circle around the body by
+construction (5.25 m of chain + 1.15 m of arm), so nothing *dynamic* can ever
+demand a wider view; the largest must-see box in the game is the F1→F2 leap at
+11.1 × 7.1 m against a 26.67 × 15.00 m frame, and every volume has 35–66% of
+unused headroom. Read the zoom column as a **budget**: the moment an edit puts
+a beam more than ~13 m ahead or ~11 m of vertical content inside one volume, it
+stops being optional.
+
+**The camera never reads the whip, and that is enforced rather than requested.**
+Its entire input is the body's position, the body's velocity, and a constant
+authored table. Zoom driven by rope extension pumps with the rope, and worse,
+rescaling mid-stroke regrades the apparent speed of the wave you have spent
+hours learning to read. It is also the shape of an assist: a camera that widened
+exactly when your momentum was enough to clear the next gap would be a
+feasibility oracle. The law is written as **static functions** — a static func
+cannot reach instance state, so the rope arrays are not in scope — and
+`cam_gate.gd` C1 reads `main.gd` between the camera's own markers and fails if
+any of 23 rope identifiers appears inside them.
+
+### The trap: mouse sensitivity is the camera's business, until it isn't
+
+`get_global_mouse_position()` is the mouse run **backwards through the camera**,
+so the metres-per-pixel of the control was whatever the camera happened to be
+doing. This is a position-mapped control in the Getting Over It line — the whole
+skill is motor memory of a stroke — and a sensitivity that shifts under the
+player does not read as *the camera changed*, it reads as **the whip getting
+worse**, silently, after they have already learned the old one.
+
+So the camera is removed from the expression rather than slowed down:
+
+```
+cursor = body + (mouse_px - anchor_px) * m_per_px
+```
+
+`get_global_mouse_position` appears nowhere in `main.gd`. Measured through a
+real `Camera2D` in a real viewport (`cam_gate.gd` C2): **1.66667 m per 100
+physical px of mouse at every zoom from 0.70 to 1.25 and at every window size —
+a spread of exactly zero, not merely small.** Through the camera the same sweep
+runs 1.111–2.976 m, a 168% swing, with the reach rim moving from 77 px of desk
+to 207. It is 138 px at all of them now, nailed to the same patch of desk.
+
+Two consequences worth knowing:
+
+- **Camera *position*, not just zoom, was the load-bearing half.** The framing
+  leads by up to 3.2 m and lets the body ride from 21% to 73% of frame height;
+  a camera-mapped cursor would drag a *stationary hand* 4.11 m across and
+  7.84 m down — 3.6× and 6.8× the entire 1.15 m reach. It never showed before
+  only because the shipped camera never left the body.
+- **The anchor is 1.4 m below the view centre on purpose.** That is where the
+  shipped camera put the body, so this mapping *reproduces* the control every
+  hour of practice was done against: over 9045 ticks the two differ by p50
+  0.006 m, p90 0.058 m, p99 0.132 m. The one place they part company is
+  `reset.tape`, where R teleports the body and the old camera is left 1.33 m
+  behind it — 116% of the whole reach — which is the failure mode the framing
+  would have made routine.
+
+Because the anchor is on the screen rather than in the world, the OS pointer and
+the drawn crosshair no longer coincide once the camera leads or steps (up to
+240 px apart), so the pointer is **hidden and confined** and the game's own
+crosshair is the only cursor. Past the reach rim the crosshair is pinned and
+stops telling you where your hand is; a faint ring and a dot appear then, and
+only then, to give that reading back.
+
+```
+... -s res://tests/cam_gate.gd    # C1 source ban, C2 mouse invariance, C3 zoom
+                                  # rate cap, C4 framing over 9045 ticks, C5 the
+                                  # cursor path names no way back to the camera
+... -s res://tests/cam_ship.gd    # what the camera DOES: framing percentiles,
+                                  # vertical travel, shelf steps, cost
+... -s res://tests/cam_live.gd    # the live _physics_process path, and whether
+                                  # a save from the previous build still loads
+... -s res://tests/cam_view.gd -- --replay tapes/door.tape mode=door out=DIR
+                                  # photographs the real frame, and prints a
+                                  # manifest of what is inside it in metres
+```
+
+The camera costs **2.8 us a tick** — 0.017% of a 16.7 ms frame, and 0.11% of
+what one simulation tick already spends.
+
 ## Sound is instrumentation, not polish
 
 A real whip is learned by ear, because the tip outruns the eye. This game is
@@ -247,6 +358,13 @@ slot. It refuses to step if `save_enabled` is not false.
 - Rope never pushes. Arm forces are internal pairs (no waggle-flight).
 - Dissipation only via contact friction and taut-catch yanks.
 - Wrap angle is measured from live geometry every tick, never event-counted.
+- **The camera never reads the whip.** Its whole input is the body's position,
+  the body's velocity and an authored table. Not zoom, not framing, not a
+  bias — a camera that reacts to what the rope is doing pumps with it, and one
+  that reacts to whether you *could* make the next gap is a feasibility oracle.
+- **The mouse never reads the camera.** Sensitivity is a constant, in metres
+  per physical pixel, at every zoom and every window size. Both bans are
+  enforced by `tests/cam_gate.gd` reading the source, not by these bullets.
 - The capstan pin (material point pinned at TH_FULL) is the documented
   stand-in for rope self-pinch — the pressure-test showed a bare tapered
   tail cannot hold a body by capstan friction alone.

@@ -156,6 +156,8 @@ G1 stability · G2 bit-determinism · G3 wave amplification ≥3× (the crack)
 · G4 full wrap locks and holds · G5 partial wrap catches then betrays
 · G6 no free lift from mouse waggle · G7 grip matters.
 
+Sound has its own gate; see "Sound is instrumentation" below.
+
 ```
 ... -s res://tests/save_test.gd
 ```
@@ -166,6 +168,73 @@ mid-betrayal, and coiled past the lock threshold. At each, an uninterrupted run,
 a run that was snapshotted, that snapshot restored from memory, and that
 snapshot written to a file and loaded into a sim that never played those ticks
 must all produce one hash.
+
+## Sound is instrumentation, not polish
+
+A real whip is learned by ear, because the tip outruns the eye. This game is
+about reading a rope you can only partly see, so its sound is an instrument:
+**it renders the past and the present, and never the future.** A cue that told
+you a wrap *would* hold would be the same defect as a trajectory ghost.
+
+Everything is generated in code, as the greybox has no asset pipeline. Seeded
+RNG builds the waveforms at startup; **no RNG ever reaches the simulation.**
+
+Every curve is fitted to measured data, not guessed — `tests/aud_probe.gd`
+replays the tape corpus (7679 ticks) and reports the distribution of each
+driver. Two of them contradicted the obvious guess:
+
+- **The bang samples the rising edge, not the peak.** The tip reaches 85.7 m/s
+  (3.57x the crack threshold), but the crack fires on the *first* tick past the
+  threshold and then waits out a 0.3 s cooldown, so the overshoot *at the bang*
+  is only 1.00–2.42x (p50 1.19). A loudness ramp built to 3.57 would have put
+  the median crack 8% of the way up it.
+- **A wrap you are on is never unloaded.** Measured, tension never falls below
+  45.9 N while a wrap is engaged, so the load voice thins at the dead point of a
+  swing — it does not go silent.
+
+**Every voice has a visual twin driven by the same number on the same tick**, so
+a deaf player reads the same instrument rather than a worse one:
+
+| voice | what it renders (present state) | visual twin |
+|---|---|---|
+| air whoosh | tip speed, 2–30 m/s | halo at the tip, same ramp |
+| load hum | newtons on the wrap, 40–240 N | the loaded leg of the rope glows |
+| ground grit | contacts resolved this tick | a pip on each touching particle |
+| crack | overshoot past `CRACK_SPEED` | tip flash, sized by the same number |
+| winding tick | each half turn on the beam | the half-turn dots on the arc |
+| slip rasp | `slipping`, right now | the red outer arc |
+| catch | a wrap engaged | white ring leaving the beam |
+| verdict | the classification, once made | the arc resolves + a pulse in its colour |
+| ratchet | one segment paid through | a red pulse, one per segment |
+| slid off / let go | how the wrap ended | a red / pale burst |
+
+The verdict fires when `a_locked` leaves −1 and uses `_holds()` — the arc's *own*
+predicate — so the pulse, the ring and the sound cannot say three different
+things. **Nothing at all is said while a wrap is pending**, which is the line:
+speaking then would be announcing how the classification is going to come out.
+
+```
+... -s res://tests/aud_gate.gd
+```
+
+A1 no audio node exists headlessly · **A2 the golden hash is unchanged with the
+audio pass forced ON** · A3 every audible event raised its ring on the same tick
+· A4 no verdict ran ahead of the sim · A5 the voices are actually driven ·
+A6 cost. A2 is the one that matters: it runs the audio code rather than
+reasoning about it, and the sim still hashes `2762505307938286422`.
+
+```
+... -s res://tests/aud_wave.gd     # level, DC, loop seams, sweep frequencies
+... -s res://tests/aud_probe.gd    # the distributions the curves are fitted to
+... -s res://tests/aud_trace.gd -- betray    # per-tick drivers for one tape
+... -s res://tests/aud_shot.gd -- --replay tapes/school.tape 359 366 out=DIR
+```
+
+`aud_shot` puts the real node in the tree to photograph the twins. It **must**
+be given `--replay`: `_ready` is deferred to the first frame, so a harness that
+clears `save_enabled` in `_initialize` has it turned back on a frame later by
+`_boot_session` — and then writes a run the player never played over the one
+slot. It refuses to step if `save_enabled` is not false.
 
 ## Design contracts (do not "improve" these away)
 

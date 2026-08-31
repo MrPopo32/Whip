@@ -284,6 +284,107 @@ var status: Label
 var sfx_crack: AudioStreamPlayer
 var sfx_tick: AudioStreamPlayer
 var sfx_rasp: AudioStreamPlayer
+var sfx_air: AudioStreamPlayer        # the rope moving through air
+var sfx_load: AudioStreamPlayer       # what the wrap is carrying
+var sfx_grit: AudioStreamPlayer       # rope and body dragging on the ground
+var sfx_catch: AudioStreamPlayer      # a wrap engaged
+var sfx_lock: AudioStreamPlayer       # the verdict, when it holds
+var sfx_part: AudioStreamPlayer       # the verdict, when it does not
+var sfx_ratch: AudioStreamPlayer      # one segment paid through the wrap
+var sfx_off: AudioStreamPlayer        # the wrap ran out of tail
+var sfx_let: AudioStreamPlayer        # you opened your hand / it unwound clean
+
+# ------------------------------------------ audio + visual instrumentation --
+# THE ASSIST LINE, applied to sound exactly as it is applied to the screen:
+# the PAST and the PRESENT are instrumentation, the FUTURE is an assist. Every
+# voice below renders a quantity the simulation has ALREADY produced this tick.
+# None of them fires before the state it describes exists, and none of them is
+# a function of anything the sim has not yet computed.
+#
+# ACCESSIBILITY PARITY, also a project ruling: every voice here has a visual
+# twin driven by THE SAME NUMBER ON THE SAME TICK, so a deaf player is reading
+# the same instrument, not a worse one. The pairs, and where the twin is drawn:
+#   air whoosh      <-> tip halo, radius by tip speed            (_draw, tip)
+#   load hum        <-> the loaded leg of the rope glows          (_draw, chain)
+#   ground grit     <-> a pip on every particle in contact        (_draw, chain)
+#   crack           <-> the tip flash, sized by the same overshoot(_draw, tip)
+#   winding tick    <-> the half-turn dots on the arc             (existing)
+#   slip rasp       <-> the red outer arc                         (existing)
+#   catch           <-> a white ring leaving the beam             (_draw, anchor)
+#   verdict holds   <-> the arc turns green + a green pulse       (_draw, anchor)
+#   verdict betrays <-> the arc turns amber + an amber pulse      (_draw, anchor)
+#   ratchet         <-> a red pulse, one per segment paid         (_draw, anchor)
+#   slid off        <-> a red burst                               (_draw, anchor)
+#   let go          <-> a pale burst                              (_draw, anchor)
+#
+# EVERY CURVE IS FITTED TO MEASURED DATA, not to a guess: tests/aud_probe.gd
+# replays the committed tape corpus (7679 ticks) and reports the distribution
+# of each driver. What it found, and what the ranges below are built on:
+#   tip speed       p50   8.6   p90  29.2   p99  53.2   max  85.7  m/s
+#   wrap tension    min  45.9   p50  67.7   p90 157.1   max 232.1  N (wrapped)
+#   ground scrape   p50  18.5   p90  54.9   p99 108.9   max 276.8  (sum m/s)
+const AV_AIR := 0
+const AV_LOAD := 1
+const AV_GRIT := 2
+const AV_RASP := 3
+const AV_N := 4
+const AIR_LO := 2.0                   # m/s of tip: below this, no air noise
+const AIR_HI := 30.0                  # m/s: the measured p90 tops the ramp
+const AIR_DB := Vector2(-42.0, -12.0)
+const AIR_PITCH := Vector2(0.55, 2.40)
+# The tension floor is MEASURED, not chosen: over the corpus a wrap that is
+# engaged at all never carries less than 45.9 N, so the hum does not fall
+# silent at the dead point of a swing - it thins. That is the honest reading;
+# a rope you are hanging on is never unloaded.
+const LOAD_LO := 40.0
+const LOAD_HI := 240.0
+const LOAD_DB := Vector2(-33.0, -13.0)
+const LOAD_PITCH := Vector2(0.80, 1.85)
+const GRIT_LO := 4.0
+const GRIT_HI := 120.0
+const GRIT_DB := Vector2(-46.0, -18.0)
+const GRIT_PITCH := Vector2(0.60, 1.60)
+const RASP_DB := Vector2(-24.0, -13.0)
+const CRACK_DB := Vector2(-9.0, -1.0)
+const CRACK_PITCH := Vector2(0.85, 1.45)
+# CRACK_OVER IS MEASURED AT THE BANG, NOT AT THE PEAK, and the correction
+# matters. The obvious number is the top tip speed the game produces - 85.7
+# m/s, 3.57x the threshold - and it is the wrong one: the crack fires on the
+# FIRST tick past CRACK_SPEED and then sits out a 0.3 s cooldown, so it
+# samples the rising edge, never the peak. Measured over the corpus's 168
+# real cracks, the overshoot AT THE BANG runs 1.00x to 2.42x, p50 1.19, p90
+# 1.59. A ramp built to 3.57 put the median crack 8% of the way up its own
+# loudness range and left the top two thirds of it unreachable. The
+# distribution is skewed too, so the ramp is square-rooted: p50 lands at
+# 0.37 and the loudest crack at 1.0, which uses the range while staying
+# monotonic in tip speed - louder still means faster, which is the only
+# thing this cue is allowed to mean.
+const CRACK_OVER := 2.42
+
+# NONE OF THIS IS SIMULATION STATE. It is all named in SNAP_SKIP, which is what
+# keeps a save and a tape describing the same simulation they always did.
+var av_on := false                    # only a real windowed session; the probes
+                                      # build the sim with new() and never enter
+                                      # the tree, so _ready never fires, av_on
+                                      # stays false and no audio node exists
+var av_touch := PackedByteArray()     # per particle: touched terrain this tick
+var av_scrape := 0.0                  # m/s summed over particles in contact
+var av_tension := 0.0                 # N carried by the load-bearing wrap
+var av_lidx := -1                     # chain index the load runs out to
+var av_over := 0.0                    # last crack's overshoot past CRACK_SPEED
+var av_flash0 := 0.0                  # previous crack_flash (the crack's edge)
+var av_half := PackedInt32Array()     # previous half-turn count, per anchor
+var av_eng := PackedByteArray()       # previous engaged flag, per anchor
+var av_hold := PackedByteArray()      # previous _holds(), per anchor
+var av_lk := PackedInt32Array()       # previous a_locked, per anchor
+var av_pin := PackedInt32Array()      # previous pin index, per anchor
+var av_burst := PackedFloat32Array()  # per anchor: 1 -> 0 event flash
+var av_bcol := PackedColorArray()     # per anchor: what that flash means
+var av_brad := PackedFloat32Array()   # per anchor: how big it gets
+var av_lvl := PackedFloat32Array()    # smoothed level per continuous voice
+var av_pit := PackedFloat32Array()    # smoothed pitch per continuous voice
+var av_lvl_t := PackedFloat32Array()  # this tick's level target
+var av_pit_t := PackedFloat32Array()  # this tick's pitch target
 
 # ------------------------------------------------------------------- setup --
 func _ready() -> void:
@@ -312,18 +413,35 @@ func _ready() -> void:
 	status.add_theme_color_override("font_color", Color(0.62, 0.66, 0.74))
 	canvas.add_child(status)
 
-	sfx_crack = AudioStreamPlayer.new()
-	sfx_crack.stream = _make_noise_wav(0.09, 0.018, 26111)
-	sfx_crack.volume_db = -4.0
-	add_child(sfx_crack)
-	sfx_tick = AudioStreamPlayer.new()
-	sfx_tick.stream = _make_sine_wav(0.05, 880.0)
-	sfx_tick.volume_db = -8.0
-	add_child(sfx_tick)
-	sfx_rasp = AudioStreamPlayer.new()
-	sfx_rasp.stream = _make_noise_wav(0.4, 10.0, 7333, true)
-	sfx_rasp.volume_db = -14.0
-	add_child(sfx_rasp)
+	sfx_crack = _player(_make_noise_wav(0.09, 0.018, 26111), -4.0, 2)
+	sfx_tick = _player(_make_sine_wav(0.05, 880.0), -8.0, 3)
+	sfx_rasp = _player(_make_noise_wav(0.4, 10.0, 7333, true), -80.0, 1)
+	# THE THREE CONTINUOUS VOICES. Each is a looping AudioStreamWAV whose
+	# volume and pitch are written once a frame, NOT an AudioStreamGenerator
+	# pushing samples. That is a deliberate choice and the reason is the tick
+	# budget: the sim already costs 2.2-4.3 ms of a 16.7 ms frame (tests/perf),
+	# and a generator would put a per-sample synthesis loop in GDScript on the
+	# same thread - 735 samples a frame per voice, three voices, against four
+	# float writes for the loop-and-drive approach. Resampling a noise loop
+	# upward genuinely brightens it, which is the whoosh cue, and resampling a
+	# harmonic loop upward genuinely raises its pitch, which is the load cue,
+	# so the cheap route also happens to be the expressive one here.
+	sfx_air = _player(_make_loop_noise(0.50, 90211, 0.55), -80.0, 1)
+	sfx_grit = _player(_make_loop_noise(0.50, 41903, 0.10), -80.0, 1)
+	sfx_load = _player(_make_loop_tone(110.25, 0.30, [1.0, 0.5, 0.24, 0.1]),
+		-80.0, 1)
+	sfx_catch = _player(_make_thock(0.16, 150.0, 0.055, 5501, 0.35), -7.0, 3)
+	sfx_lock = _player(_make_chord(0.45, 196.0, 0.16, 0.085), -7.0, 2)
+	sfx_part = _player(_make_thock(0.34, 233.0, 0.10, 8117, 0.10), -9.0, 2)
+	sfx_ratch = _player(_make_thock(0.07, 520.0, 0.013, 3391, 0.55), -11.0, 4)
+	sfx_off = _player(_make_sweep(0.50, 950.0, 90.0, 0.14, 6607, 0.55), -6.0, 2)
+	sfx_let = _player(_make_sweep(0.22, 300.0, 720.0, 0.06, 2213, 0.85),
+		-13.0, 2)
+	# The four continuous voices are ramped, and _av_voice starts and stops
+	# each one at the silent end of its own ramp - so none of them is
+	# running while the game has nothing to say with it.
+	av_on = true
+	_av_reset()
 
 func clear_anchors() -> void:
 	for k in a_freelen.size():
@@ -345,6 +463,7 @@ func clear_anchors() -> void:
 func setup_sim() -> void:
 	_build_level()
 	_reset()
+	_av_size()
 
 func _build_level() -> void:
 	# Terrain: y-down, up is negative. Hand-placed, deterministic.
@@ -483,8 +602,7 @@ func _reset() -> void:
 	crack_cooldown = 0.0
 	crack_flash = 0.0
 	slipping = false
-	if sfx_rasp != null and sfx_rasp.playing:
-		sfx_rasp.stop()
+	_av_reset()
 	if cam != null:
 		cam.position = (body_pos + Vector2(0.0, -1.4)) * PPM
 		cam.reset_smoothing()
@@ -504,6 +622,7 @@ func _input(event: InputEvent) -> void:
 			# step_tick puts it inside the recorded input stream instead.
 			pending_reset = true
 		elif event.keycode == KEY_ESCAPE:
+			_av_stop()   # leave quietly; see _notification
 			get_tree().quit()
 
 func _physics_process(_d: float) -> void:
@@ -514,6 +633,7 @@ func _physics_process(_d: float) -> void:
 		cam.position = (body_pos + Vector2(0.0, -1.4) + _body_vel() * 0.25) * PPM
 		return
 	if play_done:
+		_av_hush()                    # ...but it does not hold its last NOISE
 		return                        # a finished replay holds its last frame
 	var mouse := get_global_mouse_position() / PPM
 	var grip := Input.is_key_pressed(KEY_SPACE) \
@@ -525,8 +645,15 @@ func _physics_process(_d: float) -> void:
 		save_due = AUTOSAVE_TICKS
 		save_to(save_path)
 
-func _process(_d: float) -> void:
+func _process(d: float) -> void:
 	queue_redraw()
+	# The DRIVERS are sampled once a tick (they are tick quantities); the
+	# smoothing and the writes to the mixer happen per FRAME, so a voice glides
+	# rather than stepping at 60 Hz. This is a smoothing of the OUTPUT only -
+	# nothing here can reach an input or a sim variable, so it is not the kind
+	# of smoothing the no-assists contract bans.
+	if av_on:
+		_av_frame(d)
 	if status != null:
 		var secs := run_ticks / 60.0
 		var line := "time %.1fs   falls %d   tip %.0f m/s" % [secs, falls, tip_speed]
@@ -555,6 +682,9 @@ func step_tick(cursor_world_m: Vector2, grip: bool) -> void:
 		run_ticks += 1
 	tick_count += 1
 
+	if av_on:
+		av_touch.fill(0)
+
 	var max_tip := 0.0
 	for s in SUB:
 		_substep()
@@ -568,6 +698,7 @@ func step_tick(cursor_world_m: Vector2, grip: bool) -> void:
 	_events()
 	if rec_on:
 		_rec_tick()
+	_av_tick()      # reads the finished tick; writes no simulation state
 
 func _body_vel() -> Vector2:
 	return (body_pos - body_prv) / SDT
@@ -693,6 +824,8 @@ func _collide_point(i: int, pr: float) -> void:
 					pos[i] = q + n * pr
 					_friction(i, n, ground_mu, pr - sd)
 				p = pos[i]
+				if av_on:
+					av_touch[i] = 1   # instrumentation only; see _av_tick
 		else:
 			# past an end of the segment: round-cap contact off the endpoint
 			var l := d.length()
@@ -701,6 +834,8 @@ func _collide_point(i: int, pr: float) -> void:
 				pos[i] = q + n2 * pr
 				_friction(i, n2, ground_mu, pr - l)
 				p = pos[i]
+				if av_on:
+					av_touch[i] = 1
 	for k in a_pos.size():
 		var d2 := p - a_pos[k]
 		var rr := a_r[k] + pr
@@ -818,6 +953,8 @@ func _swept_terrain(i: int) -> void:
 		# passing p_rad invented ~19 m/s of normal load, welding the tip down.
 		prv[i] = pos[i] - mv
 		_friction(i, n, ground_mu, 0.0)
+		if av_on:
+			av_touch[i] = 1
 		return
 
 func _swept_body() -> void:
@@ -1295,20 +1432,12 @@ func _events() -> void:
 	if tip_speed > CRACK_SPEED and crack_cooldown <= 0.0:
 		crack_cooldown = 0.3
 		crack_flash = 1.0
-		if sfx_crack != null:
-			sfx_crack.play()
 	for k in a_pos.size():
-		var half := int(absf(a_theta[k]) / PI)
-		if half > a_half[k] and half >= 1:
-			if sfx_tick != null:
-				sfx_tick.pitch_scale = 1.0 + 0.18 * half
-				sfx_tick.play()
-		a_half[k] = half
-	if sfx_rasp != null:
-		if slipping and not sfx_rasp.playing:
-			sfx_rasp.play()
-		elif not slipping and sfx_rasp.playing:
-			sfx_rasp.stop()
+		# The half-turn count is simulation-visible state (it is in the
+		# snapshot), so it is kept here. Every voice that STEPS on it reads the
+		# transition from its own copy in _av_tick, which is why nothing about
+		# sound is left in the tick's own arithmetic.
+		a_half[k] = int(absf(a_theta[k]) / PI)
 	# safety net: below the world (floor tunneling, or running off the end
 	# of the map). Move body AND chain rigidly at rest and drop every wrap -
 	# teleporting the body alone would leave the whip metres away and the arm
@@ -1347,17 +1476,7 @@ func _draw() -> void:
 			# so a wrap that was about to hold looked exactly like one that never
 			# would.
 			var engaged := a_freelen[k] >= 0.0
-			var locked := engaged and a_locked[k] == 1
-			# A wrap made from far away pinches on its own draped TAIL, so it
-			# classifies green and then tears off the moment a real swing
-			# straightens that tail out. On flat ground a dead hang never
-			# loads it enough to show; off the door it decides everything.
-			# If there is less chain past the wrap than a pinch needs, say so
-			# now - present state, not prediction: a tell, not a trap.
-			if locked and a_pinidx[k] >= 0:
-				var tail: float = cum_len[NP - 1] - cum_len[a_pinidx[k]]
-				if tail < PINCH_TURN * TAU * (a_r[k] + 0.02):
-					locked = false
+			var locked := _holds(k)
 			var col := Color(0.55, 0.55, 0.60)              # merely touching
 			if locked:
 				col = Color(0.3, 0.9, 0.45)                 # pinched: it holds
@@ -1370,6 +1489,18 @@ func _draw() -> void:
 			for h in range(1, int(th / PI) + 1):
 				var ang := -PI / 2.0 + PI * h
 				draw_circle(c + Vector2.from_angle(ang) * (r + 8.0), 4.0, col)
+		# THE VISUAL TWIN OF EVERY ONE-SHOT AT THIS BEAM. A ring that leaves
+		# the beam as it fades, in the colour of what just happened: white for
+		# a catch, green for a verdict that holds, amber for one that does not,
+		# red per segment paid and for the tail running out, pale for letting
+		# go. Same tick, same event, same information as the sound - which is
+		# the parity rule, and the reason none of these is audio-only.
+		if av_on and av_burst[k] > 0.0:
+			var bf := av_burst[k]
+			var bc: Color = av_bcol[k]
+			bc.a = bf * bf * 0.95
+			draw_arc(c, r + 6.0 + (1.0 - bf) * 30.0 * av_brad[k], 0.0, TAU, 28,
+				bc, 1.0 + 2.5 * bf)
 
 	# chain: width tapers with mass, color shows grip state (instrumentation)
 	var slack_col := Color(0.78, 0.72, 0.6)
@@ -1378,9 +1509,39 @@ func _draw() -> void:
 	for i in NSEG:
 		var w := lerpf(6.0, 2.0, float(i) / float(NSEG - 1))
 		draw_line(pos[i] * PPM, pos[i + 1] * PPM, col_now, w)
-	# crack flash at the tip (past event, fades)
+	if av_on:
+		# TENSION, drawn along the rope that is carrying it - the twin of the
+		# load hum, from the same newtons on the same tick. It runs from your
+		# hand to the wrap because that is the stretch under load; the tail
+		# past the wrap carries none of it and is not lit.
+		if av_tension > 0.0 and av_lidx > 0:
+			var lf := clampf((av_tension - LOAD_LO) / (LOAD_HI - LOAD_LO),
+				0.0, 1.0)
+			var lc := Color(1.0, 0.86, 0.45, 0.22 + 0.55 * lf)
+			for i in mini(av_lidx, NSEG):
+				draw_line(pos[i] * PPM, pos[i + 1] * PPM, lc, 1.0 + 3.0 * lf)
+		# THE GROUND, on the particles that are actually touching it - the twin
+		# of the grit voice, and the same contacts that fed it.
+		if av_scrape > GRIT_LO:
+			var gf := clampf((av_scrape - GRIT_LO) / (GRIT_HI - GRIT_LO),
+				0.0, 1.0)
+			var gc := Color(0.95, 0.90, 0.78, 0.12 + 0.45 * gf)
+			for i in NP:
+				if av_touch[i] != 0:
+					draw_circle(pos[i] * PPM, 1.5 + 2.5 * gf, gc)
+		# TIP SPEED. The whole reason the air voice exists is that the tip
+		# outruns the eye; this is the same number made visible, so the reading
+		# is available without hearing it. It is present state - where the tip
+		# is and how fast it is going THIS tick, never where it is headed.
+		var af := clampf((tip_speed - AIR_LO) / (AIR_HI - AIR_LO), 0.0, 1.0)
+		if af > 0.0:
+			draw_circle(pos[NP - 1] * PPM, 2.5 + 9.0 * af,
+				Color(0.88, 0.92, 1.0, 0.08 + 0.30 * af))
+	# crack flash at the tip (past event, fades). Sized by HOW FAR past
+	# CRACK_SPEED the tip went, which is the same overshoot the bang is
+	# pitched and levelled by - so the flash is loud when the crack is.
 	if crack_flash > 0.0:
-		draw_circle(pos[NP - 1] * PPM, 10.0 * crack_flash,
+		draw_circle(pos[NP - 1] * PPM, (8.0 + 13.0 * av_over) * crack_flash,
 			Color(1.0, 0.95, 0.7, crack_flash * 0.8))
 
 	# body: a stoic capsule with a face (dignity is the comedy)
@@ -1409,6 +1570,475 @@ func _draw() -> void:
 	draw_line(tp + Vector2(0, -6), tp + Vector2(0, 6), Color(1, 1, 1, 0.45), 1.5)
 
 # ------------------------------------------------------------------- audio --
+# WHY AUDIO IS NOT POLISH HERE. A real whip crack is learned by ear, because the
+# tip moves faster than the eye can follow, and this game is about reading a
+# rope you can only partly see. Several of its load-bearing states were, until
+# this section existed, invisible or nearly so: how fast the tip is actually
+# going, what the wrap you are hanging on is carrying, that a wrap is paying out
+# right now, how much tail is left before it slides off you.
+#
+# WHAT IS ALLOWED, and it is the project's own line: the past and the present
+# are instrumentation, the future is an assist. Read every voice below against
+# it. The air voice says how fast the tip IS. The load voice says what the wrap
+# IS carrying. The verdict says what the wrap HAS BEEN CLASSIFIED as - fired at
+# the same tick the ring changes colour, from the same predicate (_holds), never
+# before the classification the simulation has already made. The ratchet says a
+# segment HAS just run through. Nothing here is a function of a state the sim
+# has not computed yet, and nothing announces an outcome before it happens.
+#
+# ONE THING WAS DELIBERATELY NOT BUILT: a cue during the pending window, while
+# a_locked is still -1 and the sim is watching for a self-crossing. A sound
+# there would be exactly the banned thing - it would be telling you how the
+# classification is going to come out before it has come out. The pending state
+# is silent, and its ring stays grey, which is honest in both channels.
+
+func _av_size() -> void:
+	av_touch.resize(NP)
+	var na := a_pos.size()
+	av_half.resize(na)
+	av_eng.resize(na)
+	av_hold.resize(na)
+	av_lk.resize(na)
+	av_pin.resize(na)
+	av_burst.resize(na)
+	av_bcol.resize(na)
+	av_brad.resize(na)
+	av_lvl.resize(AV_N)
+	av_pit.resize(AV_N)
+	av_lvl_t.resize(AV_N)
+	av_pit_t.resize(AV_N)
+	for i in AV_N:
+		av_pit[i] = 1.0
+		av_pit_t[i] = 1.0
+	for k in na:
+		av_lk[k] = -1
+		av_pin[k] = -1
+
+func _av_reset() -> void:
+	if not av_on:
+		return
+	av_scrape = 0.0
+	av_tension = 0.0
+	av_lidx = -1
+	av_over = 0.0
+	av_flash0 = 0.0
+	av_touch.fill(0)
+	for i in AV_N:
+		av_lvl[i] = 0.0
+		av_lvl_t[i] = 0.0
+	for k in a_pos.size():
+		av_half[k] = 0
+		av_eng[k] = 0
+		av_hold[k] = 0
+		av_lk[k] = -1
+		av_pin[k] = -1
+		av_burst[k] = 0.0
+
+func _av_hush() -> void:
+	if not av_on:
+		return
+	for i in AV_N:
+		av_lvl_t[i] = 0.0
+
+func _av_stop() -> void:
+	for p in [sfx_air, sfx_grit, sfx_load, sfx_rasp, sfx_crack, sfx_tick,
+			sfx_catch, sfx_lock, sfx_part, sfx_ratch, sfx_off, sfx_let]:
+		if p == null:
+			continue
+		p.stop()
+		p.stream = null
+
+func _holds(k: int) -> bool:
+	# THE RING'S OWN PREDICATE, in one place, so the sound and the arc cannot
+	# drift apart - a voice that disagreed with its twin would break parity
+	# silently, and only for the players who cannot hear it.
+	#
+	# Green means the rope has crossed itself AND there is enough tail past the
+	# wrap for that crossing to be real. A wrap made from far away pinches on
+	# its own draped tail, classifies green, and tears off the moment a swing
+	# straightens that tail out; if there is less chain past the wrap than a
+	# pinch needs, say so now. Both halves are facts about the geometry as it
+	# stands - present state, not prediction: a tell, not a trap.
+	if a_freelen[k] < 0.0 or a_locked[k] != 1:
+		return false
+	if a_pinidx[k] >= 0:
+		var tail: float = cum_len[NP - 1] - cum_len[a_pinidx[k]]
+		if tail < PINCH_TURN * TAU * (a_r[k] + 0.02):
+			return false
+	return true
+
+func _wrap_tension() -> float:
+	# WHAT THE WRAP IS CARRYING, in newtons, this tick: your weight resolved
+	# along the rope plus the centripetal term of the arc you are actually on.
+	#
+	#     T = M ( v_perp^2 / L  +  g cos(rope, down) )
+	#
+	# THIS IS NOT A WARNING, and it is worth being exact about why, because a
+	# tension cue is the obvious place to smuggle in a prediction. In this sim
+	# a partial wrap betrays on a fixed timer (PAYOUT_TICKS) and a locked one
+	# never lets go at all, so tension has NO bearing whatever on whether the
+	# wrap survives. It cannot forecast a failure because it does not cause
+	# one. What it renders is the single thing a hanging player has no way to
+	# see: how hard they are pulling, and therefore where in the swing they
+	# are. Measured over the corpus it runs 45.9 N at the thinnest to 232.1 N
+	# at the bottom of a hard swing - a 5x span that a static hang sits in the
+	# lower third of.
+	var best := 0.0
+	av_lidx = -1
+	for k in a_pos.size():
+		if a_freelen[k] < 0.0:
+			continue
+		var ap: Vector2 = a_pinpt[k] if a_pinidx[k] >= 0 else a_pos[k]
+		var rv := body_pos - ap
+		var l := maxf(rv.length(), 0.05)
+		var u := rv / l
+		var bv := (body_pos - body_prv) / SDT
+		var vp := maxf(bv.length_squared() - pow(bv.dot(u), 2.0), 0.0)
+		var t := BODY_M * (vp / l + GRAV.y * u.y)
+		if t > best:
+			best = t
+			av_lidx = a_pinidx[k] if a_pinidx[k] >= 0 else a_lockidx[k]
+	return best
+
+func _av_tick() -> void:
+	# Everything here READS the finished tick. It writes no simulation state,
+	# and it is skipped entirely unless a real window exists.
+	if not av_on:
+		return
+
+	# ---- the three continuous voices: what the rope is doing right now ----
+	# AIR. The tip outruns the eye at 30 m/s and reaches 86; this is the only
+	# honest readout of it there has ever been.
+	var a := clampf((tip_speed - AIR_LO) / (AIR_HI - AIR_LO), 0.0, 1.0)
+	av_lvl_t[AV_AIR] = sqrt(a)
+	av_pit_t[AV_AIR] = lerpf(AIR_PITCH.x, AIR_PITCH.y, a)
+
+	# GROUND. Summed over the particles that _collide_point actually resolved
+	# against terrain this tick, plus the body when it is on the floor - so the
+	# lash gait, every drag and every landing come from real contacts rather
+	# than from a guess at where the floor is.
+	var sc := 0.0
+	for i in NP:
+		if av_touch[i] != 0:
+			sc += (pos[i] - prv[i]).length() / SDT
+	if grounded:
+		sc += (body_pos - body_prv).length() / SDT
+	av_scrape = sc
+	var g := clampf((sc - GRIT_LO) / (GRIT_HI - GRIT_LO), 0.0, 1.0)
+	av_lvl_t[AV_GRIT] = sqrt(g)
+	av_pit_t[AV_GRIT] = lerpf(GRIT_PITCH.x, GRIT_PITCH.y, g)
+
+	# LOAD. Silent with no wrap; while there is one it never falls silent,
+	# because a wrap you are on is never unloaded (measured floor 45.9 N).
+	av_tension = _wrap_tension()
+	var ld := clampf((av_tension - LOAD_LO) / (LOAD_HI - LOAD_LO), 0.0, 1.0)
+	av_lvl_t[AV_LOAD] = 0.0 if av_tension <= 0.0 else lerpf(0.28, 1.0, ld)
+	av_pit_t[AV_LOAD] = lerpf(LOAD_PITCH.x, LOAD_PITCH.y, ld)
+
+	# SLIP. The sim's own flag, which is already binary: it either is paying
+	# out or it is not.
+	av_lvl_t[AV_RASP] = 1.0 if slipping else 0.0
+
+	# ---- the crack, and HOW HARD it was ----
+	# The bang used to be one flat sample at any speed past the threshold. The
+	# tip reaches 3.6x the threshold, so a flat bang threw away the whole top
+	# of the range - and that range IS the skill bell.
+	if crack_flash >= 1.0 and av_flash0 < 1.0:
+		av_over = sqrt(clampf((tip_speed / CRACK_SPEED - 1.0)
+			/ (CRACK_OVER - 1.0), 0.0, 1.0))
+		if sfx_crack != null:
+			sfx_crack.volume_db = lerpf(CRACK_DB.x, CRACK_DB.y, av_over)
+			sfx_crack.pitch_scale = lerpf(CRACK_PITCH.x, CRACK_PITCH.y, av_over)
+			sfx_crack.play()
+	av_flash0 = crack_flash
+
+	# ---- per beam: winding, and the four things that can happen to a wrap ----
+	for k in a_pos.size():
+		av_burst[k] = maxf(0.0, av_burst[k] - DT * 3.0)
+		var eng := 1 if a_freelen[k] >= 0.0 else 0
+		var hold := 1 if _holds(k) else 0
+		# WINDING, half turn by half turn: how much rope is on this beam. Its
+		# twin is the row of dots on the arc, which is drawn from the same
+		# count.
+		var half := int(absf(a_theta[k]) / PI)
+		if half > av_half[k] and half >= 1 and sfx_tick != null:
+			sfx_tick.pitch_scale = 1.0 + 0.18 * float(half)
+			sfx_tick.play()
+		av_half[k] = half
+
+		if eng == 1 and av_eng[k] == 0:
+			# THE CATCH. Neutral on purpose: at this instant the simulation has
+			# not classified the wrap either (a_locked is -1), so a catch that
+			# sounded confident would be inventing information.
+			_av_flash(k, Color(1.0, 0.97, 0.90), 1.0)
+			if sfx_catch != null:
+				sfx_catch.pitch_scale = lerpf(1.40, 0.85,
+					clampf((a_r[k] - 0.09) / 0.14, 0.0, 1.0))
+				sfx_catch.play()
+		elif eng == 0 and av_eng[k] == 1:
+			# HOW THE WRAP ENDED, told apart exactly the way _update_locks and
+			# the tape census tell them apart: an open hand is a dismount, a
+			# re-armed anchor unwound on its own, anything else ran out of tail.
+			if not taut:
+				_av_flash(k, Color(0.86, 0.88, 0.96), 0.8)
+				if sfx_let != null:
+					sfx_let.pitch_scale = 1.0
+					sfx_let.volume_db = -13.0
+					sfx_let.play()
+			elif a_armed[k] == 1:
+				_av_flash(k, Color(0.75, 0.95, 1.0), 0.9)
+				if sfx_let != null:
+					sfx_let.pitch_scale = 0.70
+					sfx_let.volume_db = -10.0
+					sfx_let.play()
+			else:
+				# it slid off its own end. This is the loss, and it stings.
+				_av_flash(k, Color(1.0, 0.32, 0.18), 1.5)
+				if sfx_off != null:
+					sfx_off.play()
+		elif eng == 1:
+			# THE VERDICT. It fires at the tick the simulation's own
+			# classification RESOLVES - a_locked leaving -1 - and again if that
+			# reading later changes. It reports a decision the sim has ALREADY
+			# made from settled geometry six or more ticks earlier; it does not
+			# anticipate one, which is exactly why nothing at all is said while
+			# a_locked is still -1 and the pinch window is still open.
+			#
+			# THE ABSENCE OF A SOUND IS NOT A READING. Firing only on 'it holds'
+			# would have left every other verdict announced by silence, and
+			# silence is not something a player can time. Measured over the
+			# corpus, 3 catches produced exactly 1 green - so two thirds of all
+			# verdicts would have been delivered by nothing happening. Both
+			# outcomes get a voice, and both get a pulse.
+			#
+			# WHICH one plays is decided by _holds, the ARC's own predicate, so
+			# the pulse, the ring and the sound cannot end up saying three
+			# different things. That is load-bearing here: 2 of the corpus's 3
+			# locks classify a_locked == 1 and then fail the tail test, and the
+			# screen has always drawn those amber. Now they sound amber too.
+			var res := a_locked[k] != -1 and av_lk[k] == -1
+			if res or hold != av_hold[k]:
+				if hold == 1:
+					_av_flash(k, Color(0.30, 0.95, 0.50), 1.1)
+					if sfx_lock != null:
+						sfx_lock.play()
+				else:
+					# a green that GOES amber is worse news than one that was
+					# amber from the start, so it is the same tone pitched down
+					# rather than a second sound to learn.
+					_av_flash(k, Color(0.95, 0.75, 0.20), 1.0)
+					if sfx_part != null:
+						sfx_part.pitch_scale = 0.76 if av_hold[k] == 1 else 1.0
+						sfx_part.play()
+			if av_pin[k] >= 0 and a_pinidx[k] > av_pin[k]:
+				# ONE SEGMENT HAS JUST RUN THROUGH THE WRAP. The betrayal was
+				# audible only as an undifferentiated rasp; now it is countable,
+				# and it rises as the tail shortens, because the tail left IS
+				# present state (measured 0.29 m and 0.14 m at the two payouts
+				# in the corpus - the second click of a slide is already high).
+				var tail: float = cum_len[NP - 1] - cum_len[a_pinidx[k]]
+				var f := clampf(1.0 - tail / 1.2, 0.0, 1.0)
+				_av_flash(k, Color(1.0, 0.45, 0.25), 0.7)
+				if sfx_ratch != null:
+					sfx_ratch.pitch_scale = lerpf(0.90, 2.10, f)
+					sfx_ratch.play()
+		av_eng[k] = eng
+		av_hold[k] = hold
+		av_lk[k] = a_locked[k] if eng == 1 else -1
+		av_pin[k] = a_pinidx[k] if eng == 1 else -1
+
+func _av_flash(k: int, c: Color, rad: float) -> void:
+	av_burst[k] = 1.0
+	av_bcol[k] = c
+	av_brad[k] = rad
+
+func _av_frame(dt: float) -> void:
+	# Per-frame glide toward this tick's targets. Attack is fast and release is
+	# slow, which is what a whoosh does: the rope arrives before it leaves.
+	for i in AV_N:
+		var tau_l := 0.020 if av_lvl_t[i] > av_lvl[i] else 0.085
+		av_lvl[i] = _av_glide(av_lvl[i], av_lvl_t[i], dt, tau_l)
+		av_pit[i] = _av_glide(av_pit[i], av_pit_t[i], dt, 0.030)
+	_av_voice(sfx_air, av_lvl[AV_AIR], av_pit[AV_AIR], AIR_DB)
+	_av_voice(sfx_grit, av_lvl[AV_GRIT], av_pit[AV_GRIT], GRIT_DB)
+	_av_voice(sfx_load, av_lvl[AV_LOAD], av_pit[AV_LOAD], LOAD_DB)
+	_av_voice(sfx_rasp, av_lvl[AV_RASP], av_pit[AV_RASP], RASP_DB)
+
+static func _av_glide(v: float, t: float, dt: float, tau: float) -> float:
+	return t + (v - t) * exp(-dt / maxf(tau, 0.001))
+
+func _av_voice(p: AudioStreamPlayer, lvl: float, pit: float,
+		db: Vector2) -> void:
+	if p == null:
+		return
+	p.pitch_scale = clampf(pit, 0.05, 4.0)
+	# A LOOP RUNS ONLY WHILE IT HAS SOMETHING TO SAY. Riding the volume on
+	# four permanently-running loops is the obvious way to avoid the click
+	# that start/stop puts on a noise loop - but that click only exists at an
+	# AUDIBLE level. The ramp is exponential toward zero and this gate is at
+	# 0.002, which is below the bottom of every ramp declared above (-42 dB
+	# at the quietest), so a voice is stopped and started in silence and
+	# there is nothing to click. Riding the volume also had a second cost
+	# that measurement found and reasoning did not: a looping playback still
+	# running at teardown stays held by the audio server, and the game was
+	# exiting with three of them running every single time.
+	if lvl <= 0.002:
+		p.volume_db = -80.0
+		if p.playing:
+			p.stop()
+		return
+	# The bottom of a ramp is not silence - the quietest declared level is
+	# -42 dB, and starting a noise loop AT -42 dB is exactly the click the
+	# ramp exists to avoid. So the last twentieth of the ramp fades the
+	# whole voice out to -80 dB, and the start/stop above therefore happens
+	# at -78 dB rather than at -42.
+	var db_now := lerpf(db.x, db.y, clampf(lvl, 0.0, 1.0))
+	if lvl < 0.05:
+		db_now = lerpf(-80.0, db_now, lvl / 0.05)
+	p.volume_db = db_now
+	if not p.playing:
+		p.play()
+
+func _player(st: AudioStream, db: float, poly: int) -> AudioStreamPlayer:
+	var p := AudioStreamPlayer.new()
+	p.stream = st
+	p.volume_db = db
+	p.max_polyphony = maxi(poly, 1)
+	add_child(p)
+	return p
+
+func _wav_of(data: PackedByteArray, rate: int, n: int,
+		looped: bool) -> AudioStreamWAV:
+	var w := AudioStreamWAV.new()
+	w.format = AudioStreamWAV.FORMAT_16_BITS
+	w.mix_rate = rate
+	w.stereo = false
+	w.data = data
+	if looped:
+		w.loop_mode = AudioStreamWAV.LOOP_FORWARD
+		w.loop_begin = 0
+		w.loop_end = n
+	return w
+
+func _make_loop_noise(dur: float, seed_v: int, lp: float) -> AudioStreamWAV:
+	# A LOOP THAT DOES NOT TICK. Filtered noise has a step at the seam, and a
+	# 0.5 s loop repeats that step twice a second - which the ear hears as a
+	# pitch sitting on top of the whoosh, not as noise. So generate past the
+	# loop point and cross-fade the tail back over the head: the buffer then
+	# joins itself, and the voice is air rather than air plus a 2 Hz tick.
+	var rate := 22050
+	var n := int(dur * rate)
+	var xf := int(0.012 * rate)
+	var rng := RandomNumberGenerator.new()
+	rng.seed = seed_v          # audio generation only - the SIM has no RNG
+	var s := PackedFloat32Array()
+	s.resize(n + xf)
+	var y := 0.0
+	for i in n + xf:
+		y += lp * (rng.randf_range(-1.0, 1.0) - y)
+		s[i] = y
+	for i in xf:
+		var f := float(i) / float(xf)
+		s[i] = s[i] * f + s[n + i] * (1.0 - f)
+	var pk := 0.0001
+	for i in n:
+		pk = maxf(pk, absf(s[i]))
+	var data := PackedByteArray()
+	data.resize(n * 2)
+	for i in n:
+		data.encode_s16(i * 2, int(clampf(s[i] / pk, -1.0, 1.0) * 30000.0))
+	return _wav_of(data, rate, n, true)
+
+func _make_loop_tone(hz: float, dur: float, harm: Array) -> AudioStreamWAV:
+	# An EXACT integer number of cycles, so the loop point continues the
+	# waveform instead of clicking - the tonal half of the same problem, and
+	# free: pick the period in whole samples and make the buffer a multiple.
+	var rate := 22050
+	var per := maxi(int(round(float(rate) / hz)), 2)
+	var cyc := maxi(int(round(dur * float(rate) / float(per))), 1)
+	var n := per * cyc
+	var s := PackedFloat32Array()
+	s.resize(n)
+	var pk := 0.0001
+	for i in n:
+		var ph := TAU * float(i) / float(per)
+		var v := 0.0
+		for h in harm.size():
+			v += float(harm[h]) * sin(ph * float(h + 1))
+		s[i] = v
+		pk = maxf(pk, absf(v))
+	var data := PackedByteArray()
+	data.resize(n * 2)
+	for i in n:
+		data.encode_s16(i * 2, int(s[i] / pk * 28000.0))
+	return _wav_of(data, rate, n, true)
+
+func _make_thock(dur: float, hz: float, decay: float, seed_v: int,
+		noise: float) -> AudioStreamWAV:
+	# A struck body: a short noise transient (the impact) over a decaying tone
+	# (the thing that was struck). Wood on wood, not a beep - the catch is rope
+	# arriving on a beam and it should sound like a physical event.
+	var rate := 22050
+	var n := int(dur * rate)
+	var rng := RandomNumberGenerator.new()
+	rng.seed = seed_v
+	var data := PackedByteArray()
+	data.resize(n * 2)
+	var y := 0.0
+	for i in n:
+		var t := float(i) / float(rate)
+		var env := exp(-t / decay)
+		y += 0.30 * (rng.randf_range(-1.0, 1.0) - y)
+		var v := sin(TAU * hz * t) * (1.0 - noise) \
+			+ y * 3.0 * noise * exp(-t / (decay * 0.22))
+		data.encode_s16(i * 2, int(clampf(v * env, -1.0, 1.0) * 29000.0))
+	return _wav_of(data, rate, n, false)
+
+func _make_chord(dur: float, hz: float, decay: float,
+		gap: float) -> AudioStreamWAV:
+	# THE VERDICT THAT HOLDS: two notes, the second a fifth BELOW the first and
+	# a beat later. A falling interval reads as settled, which is exactly what
+	# the ring says at the same instant, in green. Its partner (the wrap that
+	# does not hold) is a single unresolved tone - one note, going nowhere.
+	var rate := 22050
+	var n := int(dur * rate)
+	var data := PackedByteArray()
+	data.resize(n * 2)
+	for i in n:
+		var t := float(i) / float(rate)
+		var v := sin(TAU * hz * t) * exp(-t / decay)
+		v += 0.40 * sin(TAU * hz * 3.0 * t) * exp(-t / (decay * 0.30))
+		if t > gap:
+			var t2 := t - gap
+			v += 1.05 * sin(TAU * hz * 0.6667 * t2) * exp(-t2 / (decay * 1.6))
+		data.encode_s16(i * 2, int(clampf(v * 0.55, -1.0, 1.0) * 29000.0))
+	return _wav_of(data, rate, n, false)
+
+func _make_sweep(dur: float, hz0: float, hz1: float, decay: float,
+		seed_v: int, tone: float) -> AudioStreamWAV:
+	# A glide, for the two ways a wrap ENDS. Down = it was taken off you (the
+	# tail ran out). Up = you took it off. Phase is INTEGRATED rather than
+	# evaluated at sin(TAU*hz(t)*t), which would fold the sweep back on itself
+	# and produce a warble instead of a glide.
+	var rate := 22050
+	var n := int(dur * rate)
+	var rng := RandomNumberGenerator.new()
+	rng.seed = seed_v
+	var data := PackedByteArray()
+	data.resize(n * 2)
+	var ph := 0.0
+	var y := 0.0
+	for i in n:
+		var f := float(i) / float(n)
+		var t := float(i) / float(rate)
+		var hz: float = hz0 * pow(hz1 / hz0, f)
+		ph += TAU * hz / float(rate)
+		y += 0.25 * (rng.randf_range(-1.0, 1.0) - y)
+		var v := sin(ph) * tone + y * 3.5 * (1.0 - tone)
+		data.encode_s16(i * 2,
+			int(clampf(v * exp(-t / decay), -1.0, 1.0) * 28000.0))
+	return _wav_of(data, rate, n, false)
+
 func _make_noise_wav(dur: float, decay: float, seed_v: int,
 		looped := false) -> AudioStreamWAV:
 	var rate := 22050
@@ -1514,7 +2144,17 @@ const AUTOSAVE_TICKS := 30            # half a second: the most a crash can cost
 const SNAP_SKIP := ["external_drive", "save_enabled", "save_path", "save_due",
 	"rec_on", "rec_path", "rec_cur", "rec_grip", "rec_chk", "rec_start",
 	"rec_note", "rec_cen", "rec_prev", "rec_rst",
-	"play_on", "play_done", "play_tape", "play_at"]
+	"play_on", "play_done", "play_tape", "play_at",
+	# AUDIO AND ITS VISUAL TWINS ARE NOT THE SIMULATION. Every one of these is
+	# derived from a finished tick and feeds nothing back, so none of them
+	# belongs in a save - and leaving them out is not merely tidy, it is what
+	# keeps the key set identical. restore() refuses a state whose key set has
+	# changed, by design, so a var added here without this line would refuse
+	# every committed tape and every save on disk, and it would be right to:
+	# it could not tell an audio field from a physics field.
+	"av_on", "av_touch", "av_scrape", "av_tension", "av_lidx", "av_over",
+	"av_flash0", "av_half", "av_eng", "av_hold", "av_lk", "av_pin", "av_burst",
+	"av_bcol", "av_brad", "av_lvl", "av_pit", "av_lvl_t", "av_pit_t"]
 
 var save_enabled := false             # only a real windowed session writes to
                                       # disk. The probes build the sim with
@@ -1964,6 +2604,15 @@ func _notification(what: int) -> void:
 	if what != NOTIFICATION_WM_CLOSE_REQUEST and what != NOTIFICATION_EXIT_TREE \
 			and what != NOTIFICATION_CRASH:
 		return
+	# A GAME THAT IS LEAVING STOPS MAKING NOISE, and it does so before the
+	# save_enabled gate rather than after: a replay session never writes a save,
+	# so anything behind that early return does not run for one. Three of the
+	# four continuous voices are looping streams that are deliberately never
+	# stopped while playing (ramped instead, because start/stop on noise is a
+	# click), and a still-running playback is a live reference at teardown -
+	# measured, it left 8 objects held at exit, which the engine reports as a
+	# leak and which this project does not otherwise print.
+	_av_stop()
 	if not save_enabled:
 		return
 	save_to(save_path)

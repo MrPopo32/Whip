@@ -12,6 +12,12 @@ Open the project in Godot 4.7 and press F5, or from a terminal:
 "C:\Users\judeb\Downloads\Godot_v4.7.2-stable_win64.exe\Godot_v4.7.2-stable_win64_console.exe" --path "C:\Users\judeb\Downloads\the-whip"
 ```
 
+There is a second level, a flat teaching bench - see **THE LAB** below:
+
+```
+--path ... -- --level lab
+```
+
 ## Controls
 
 | Input | Action |
@@ -152,6 +158,159 @@ the same change as the sim edit, so the diff shows both.
 fixed substep count, but IEEE 754 does not oblige two architectures to agree on
 `sin`/`cos`/`sqrt`/`acos`, and x86 and ARM measurably do not. Nothing here
 assumes otherwise.
+
+## THE LAB — a second level, and the anchor vocabulary
+
+```
+"C:\Users\judeb\Downloads\Godot_v4.7.2-stable_win64.exe\Godot_v4.7.2-stable_win64_console.exe" --path "C:\Users\judeb\Downloads\the-whip" -- --level lab
+```
+
+No flag is the traverse, and the traverse is **byte-identical**. `--level` is
+read before `_build_level` runs and only ever adds a second branch to it:
+`tests/hashrun.gd` still prints `2762505307938286422`, `tests/tape_verify.gd`
+still PASSes all 6 tapes, and `tests/lab_gate.gd` L1/L2 assert both from inside
+the lab build itself. The three new fields (`level_id`, `a_jam`, `a_name`) are
+in `SNAP_SKIP` for a reason worth knowing: `restore()` refuses a state whose key
+set has changed, so a var declared outside that list would refuse every
+committed tape and the player's save on the next boot.
+
+The lab is a **bench, not a route** — one flat floor from x −12 to x 20, walled
+at both ends, four stations 6.5 m apart, nothing to fall off. The cost of a bad
+throw is the walk back: 56.9 s end to end with the lash gait, walked rather than
+assumed (`lab_gate.gd` L5). It has its own save slot, `user://run_lab.save`, so
+a lab session and a traverse session cannot overwrite one another.
+
+| station | what it is | why |
+|---|---|---|
+| **BEAM** r 0.22 @ 2.2 m | the reference | identical radius, height and lead to the first school beam of the traverse — the throw that works here is the throw that works there |
+| **THIN BEAM** r 0.11 @ 2.2 m | same verb, less beam | the door-beam radius. Difficulty, not vocabulary |
+| **JAM** r 0.14 @ 2.2 m | the new word | the level supplies the self-crossing. Same height as the BEAM on purpose: the only thing that differs is what it takes to make it hold |
+| **JAM HIGH** r 0.14 @ 2.9 m | the same word, thrown hard | the top of the ~3 m envelope `throw_probe.gd` measured |
+
+Every station is captioned on screen under its anchor, and a jam wears a pale
+collar outside the instrumentation ring. **The ring itself is unchanged** — it
+still goes green on `_holds()` and nothing else. A jam that read differently
+from a wrap would give the one instrument the player trusts two dialects.
+
+### What a jam anchor is
+
+`_pinch()` is this file's own definition of *a wrap that can hold a body*, and a
+jam anchor answers **yes to it while the rope is touching**. That is the whole
+change: one branch, no new state, no new rule. The catch still needs a fresh
+grip inside `GRIP_WINDOW`, classification still runs through `PINCH_RUN`, the
+ring still gates on `a_locked == 1`, and **opening your hand still drops you in
+one frame**. What the player gains is not a new verb but a new promise: *a jam
+is a beam you do not have to earn the crossing on.*
+
+### What that is worth, measured
+
+`tests/lab_throw.gd` throws **108 searched strokes** at each station from the
+lab's own floor — 3 leads × 6 stroke angles × 3 stroke lengths × pull, nothing
+hand-laid — and counts how many of them catch, lock and go green. Read the
+number as *how big the set of working strokes is*, not as a hit rate: a bigger
+basin is an easier anchor.
+
+The hand shuts on a **present-state cue off the screen**, and the two anchors
+offer different ones. On a beam it is route_bot's: shut when the arc reads as a
+catch (θ ≥ 2.6). On a jam it is the one a jam actually gives you: shut when the
+rope arrives on it.
+
+| station | cue: the arc reads | cue: the rope arrives |
+|---|---|---|
+| **BEAM** r 0.22 @ 2.2 m | 14 caught / 3 locked / **3 green** | 3 / 3 / 3 |
+| **THIN BEAM** r 0.11 @ 2.2 m | 20 / 20 / **20** | 11 / 11 / 11 |
+| **JAM** r 0.14 @ 2.2 m | 33 / 33 / **33** | 37 / 37 / **37** |
+| *the same anchor, flag OFF* | 19 / 16 / 16 | 13 / 10 / 10 |
+| **JAM HIGH** r 0.14 @ 2.9 m | 0 / 0 / 0 | 3 / 3 / **3** |
+| *the same anchor, flag OFF* | 0 / 0 / 0 | **0 / 0 / 0** |
+
+Those two *flag OFF* rows are the control, and they are the whole argument: same
+radius, same position, same rig, same 108 strokes, one bit different. At 2.2 m
+the flag takes the green basin from 16 to 33 on the arc cue and from 10 to 37 on
+the arrival cue. At 2.9 m it is the difference between **3 and none at all** —
+the jam is reachable where the ordinary anchor is not, which is what "it takes
+from angles a wrap will not" means in numbers.
+
+Then the winning stroke is caught for real, **the floor is removed** (rebuilt and
+assigned back — a packed array reached through a property is a copy, and
+`remove_at()` on one silently does nothing), and the body hangs for 3 seconds:
+
+| station | hand SHUT | ring | hand OPEN | released | tension |
+|---|---|---|---|---|---|
+| BEAM | +0.010 m | green 180/180 | falls **43.5 m** | tick 0 | 58–126 N |
+| THIN BEAM | −0.197 m | green 180/180 | falls **40.4 m** | tick 0 | 62–106 N |
+| JAM | −0.149 m | green 180/180 | falls **45.3 m** | tick 0 | 65–108 N |
+| JAM HIGH | −0.173 m | green 180/180 | falls **45.6 m** | tick 0 | 65–110 N |
+
+That is `sim_test`'s G7 asked once per anchor, and the jam passes it. The
+negative control the reading needs is in `lab_gate.gd` L7: the identical state
+with the catch dropped and the hand still shut falls 45.2 m, so the −0.149 m is
+the anchor and not the rig.
+
+**One consequence to know about: a jam never ambers.** Caught, locked and green
+are the same number in every jam row — 33/33/33, 37/37/37, 3/3/3 — because
+`_pinch` is true from the tick it engages, so `PINCH_RUN` is satisfied
+immediately and the wrap is classified LOCKED before it can be classified
+partial. The same anchor with the flag off does amber (19 caught, 16 locked —
+three partials), and so does the BEAM (14 caught, 3 locked — eleven). So a jam
+has no betrayal: it either does not take, or it holds. The ring still tells the
+truth at one; it just never has the amber to tell.
+
+### Why it is declared and not built
+
+**Geometry was measured and does not work.** Three probes swept 25 terrain and
+anchor shapes:
+
+- **The V notch** — the briefed jam, mouth open, narrowing at the back — held
+  **0 of 84** cells and **0 of 168** settled placements, against a 0.7 N noise
+  floor on a 91 N scale. It is loaded backwards: a hanging body pulls the rope
+  toward the *wide* end, so the wedge unloads exactly as it takes load. The
+  lateral wall pushes then come out as axial ejection — the tip left a 3–25°
+  notch in 0.050 s at 11.4 m/s, twenty times what gravity would give.
+- **The fork** — "a slot that pinches the rope against itself" — cannot be built
+  at all. **This sim has no rope-on-rope contact**: `_collide()` never tests a
+  particle *pair*, and 72.6% of the corpus's 7679 ticks have two non-adjacent
+  particles overlapping, deepest 0.0952 m. A hairpin with two strands in the
+  throat behaves exactly like one strand.
+- **Two shapes did hold** — a two-circle thickness jam (80.3 N for 10 s) and an
+  hourglass chockstone (91.0 N, 36/36 from searched throws, 0.0000 m of tip
+  drift over 10 s). Both are left out for the same reason: **they hold with the
+  hand open.** Over 10 s, taut and open-hand runs are bit-identical to four
+  decimals — +0.0280 m vs +0.0280 m, 91.00 N both — while an ordinary wrap on
+  the same bench fell 44.1 m when the hand opened. They hold through
+  `_solve_rope` and terrain collision alone, so no wrap engages, `a_freelen`
+  stays −1, `_holds()` is never true, and not one of the ten voices or their
+  visual twins can speak — every one is keyed to an anchor index. That is a
+  place in the world where the grip button is decorative, which is exactly what
+  the design contract forbids.
+
+```
+... -s res://tests/lab_gate.gd     # L1 the shipped level is byte-identical
+                                   # L2 all 6 tapes still name it, none names the lab
+                                   # L3 lab normals point into air (0/3 reversed)
+                                   # L4 the slots do not collide, and each refuses
+                                   #    the other's save while accepting its own
+                                   # L5 the bench is walkable, the stations are in
+                                   #    isolation, the camera never steps
+                                   # L6 the jam flag fires on contact, not at 1 m,
+                                   #    and not at all when it is off
+                                   # L7 G7 asked of the jam, from a THROWN catch
+                                   #    with the floor removed: hand shut -0.149 m
+                                   #    over 3 s and green 180/180, hand open falls
+                                   #    45.3 m on tick 0, and the control - the same
+                                   #    state with the catch dropped and the hand
+                                   #    still shut - falls 45.2 m
+... -s res://tests/lab_throw.gd    # 108 searched strokes per station, thrown from
+                                   # the lab floor; then the floor is REMOVED and
+                                   # the body hangs 3 s with the hand shut and open
+... -s res://tests/lab_shots.gd    # searches one real thrown catch per station and
+                                   # writes the states out (headless)
+... -s res://tests/lab_view.gd -- in=user://lab_shots.dat out=user://lab
+                                   # photographs them through the real _draw. Run
+                                   # WINDOWED: the headless driver's root viewport
+                                   # has no texture and get_image() returns null,
+                                   # which is why cam_view was always run with one
+```
 
 ## Test gates
 

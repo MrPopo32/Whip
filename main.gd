@@ -7,7 +7,13 @@ extends Node2D
 ## Design contracts (do not "improve" these away):
 ##  - No RNG anywhere in the sim. Bit-identical replays on the same build.
 ##  - No assists: no tip magnetism, no auto-taut, no input smoothing beyond the
-##    constant arm spring, no trajectory prediction, no slow-mo.
+##    constant arm spring, no trajectory prediction, no slow-mo. A JAM anchor
+##    (a_jam, lab levels only) is the one deliberate exception and is named as
+##    one: it supplies the self-crossing the player would otherwise have to
+##    make. It is a property of a MARKED anchor, not of the whip - it cannot
+##    follow the player around, it is drawn with its own collar, and it still
+##    obeys every other rule, grip included. An assist you can see and walk
+##    away from is a different animal to one that rides along with you.
 ##  - Rope never pushes (all rope constraints are one-sided tethers).
 ##  - Arm spring force is an INTERNAL pair (reaction applied to the body), so
 ##    mouse waggling can never add net momentum (no helicopter flight).
@@ -76,6 +82,24 @@ var th_full := 5.5                    # rad: LOCKED. Calibrated so a lock
                                   # part. Putting the lock on that step means
                                   # "locked" IS the self-pinch, the only thing
                                   # that can physically hold a body on a beam.
+var jam_min_th := 1.0                 # rad: a JAM anchor supplies the crossing,
+                                      # but not the SIGHT of it. The arc is only
+                                      # drawn above 0.3 rad, so without a floor
+                                      # here a jam holds the player with nothing
+                                      # whatever on screen - measured at 28 of
+                                      # its 37 greens, and 3 of 3 on the high
+                                      # station. Against that, the shipped
+                                      # traverse has never once held a player
+                                      # without drawing the ring: 0 of 458
+                                      # locked ticks across the whole corpus.
+                                      # 1.0 rad costs 19% of the catch rate
+                                      # (37 -> 30 of 108 searched strokes, still
+                                      # nearly double the same anchor as a plain
+                                      # beam) and buys back 100% of the dark
+                                      # holds. It also puts a jam on the SAME
+                                      # DIAL as a beam at a different number: on
+                                      # a beam you wait for the arc to close, on
+                                      # a jam you press as it appears.
 var th_rel := 1.8                     # rad: release
 
 const CRACK_SPEED := 24.0         # m/s tip speed -> crack event (sound only,
@@ -154,6 +178,20 @@ var a_whi := PackedInt32Array()
 # grip button is decorative.
 const PAYOUT_TICKS := 15              # ticks between one segment paying
                                       # through a slipping partial wrap
+# THE JAM ANCHOR. 1 = this anchor supplies the self-crossing itself; see
+# _pinch. LEVEL data, rebuilt by _build_level on every boot, so it is in
+# SNAP_SKIP and deliberately NOT in level_fingerprint: adding a field to that
+# hash changes the SHIPPED level's number even when every entry is 0, and the
+# shipped number is 2762505307938286422 in three committed tests. The lab's
+# terrain and beams differ from the traverse's anyway, so the two levels
+# already fingerprint apart without it.
+var a_jam := PackedInt32Array()
+# What to call this anchor on screen, drawn under it by _draw. Empty on the
+# shipped level - it teaches by shape and position, and a traverse with
+# captions on it is a different game. The lab is the opposite: it exists to
+# name things, and an anchor whose class you cannot read teaches nothing.
+var a_name := PackedStringArray()
+
 const TAIL_MIN := 1                   # tail segments that must remain past the
                                       # pin. A real thrown catch lands its pin
                                       # at material index 19-24, so TAIL_MIN=5
@@ -226,6 +264,23 @@ var finished := false
 var falls := 0
 var spawn := Vector2(-4.6, -1.0)
 var goal_x := 58.0
+var goal_y := 12.0                    # the floor the flag stands on. Split out
+                                      # of _draw's literal 12.0 when the lab
+                                      # arrived: the lab is flat at y=0 and a
+                                      # hardcoded 12 plants its flag 12 m
+                                      # underground. NOT hashed by
+                                      # level_fingerprint - adding a field to
+                                      # that hash would invalidate all six
+                                      # tapes and the player's save, for a
+                                      # decoration.
+
+# WHICH LEVEL THIS SIM IS. "" is the shipped traverse and it MUST stay
+# byte-identical: level_fingerprint() hashes the terrain, the beams, the spawn
+# and the goal, so one moved vertex kills all six tapes and the run on file.
+# The lab is therefore a SEPARATE build inside _build_level, chosen by
+# --level lab, with its own save slot - two levels sharing one slot would have
+# each session refuse and discard the other's run every time you switched.
+var level_id := ""
 
 var taper := 26.0                     # handle:tip mass ratio (see _reset).
                                       # Taper sets FEEL, not difficulty: it
@@ -394,6 +449,10 @@ var av_pit_t := PackedFloat32Array()  # this tick's pitch target
 # ------------------------------------------------------------------- setup --
 func _ready() -> void:
 	if pos.size() == 0:
+		# WHICH LEVEL, read before the level is built rather than in
+		# _boot_session, which runs after it. A harness that builds the sim
+		# itself sets level_id directly and never reaches this line.
+		level_id = _cmdline_level()
 		setup_sim()
 	_boot_session()   # resume the run in progress, or record / replay a tape
 
@@ -414,6 +473,15 @@ func _ready() -> void:
 	hud.add_theme_font_size_override("font_size", 17)
 	hud.add_theme_color_override("font_color", Color(0.85, 0.87, 0.92))
 	hud.text = "THE WHIP  |  mouse: move handle   R: restart\nSPACE / LMB = CLOSE YOUR HAND on the rope. It is a grip, not a stiffener:\na wrap only takes in the moment you close it, and only holds while you hold.\nOPEN your hand and you leave the beam that instant - release is your launch.\ngreen ring = the rope has crossed itself and will hold. amber = it will betray."
+	if level_id == "lab":
+		# THE BENCH SAYS WHAT IT IS. The traverse teaches by consequence and gets
+		# no captions; the lab has exactly one job, which is to name two kinds of
+		# anchor and the difference between them, so it says so out loud. The last
+		# line is the whole point of the jam and is also the thing that had to be
+		# MADE true: every geometry that held in the probes held with the hand
+		# OPEN too (+0.0280 m taut vs +0.0280 m open over 10 s), and an anchor
+		# like that turns this line into a lie.
+		hud.text = "THE WHIP - THE LAB   (--level lab)   flat ground, four stations, walk the length of it\n" + "SPACE / LMB = CLOSE YOUR HAND. A wrap only takes in the moment you close it.\n" + "BEAM and THIN BEAM are ordinary: you have to throw a CROSSING onto them.\n" + "JAM (pale collar) makes the crossing for you - it takes from angles a wrap will not.\n" + "Both let go the instant you open your hand. Green ring = it holds. Amber = it betrays."
 	canvas.add_child(hud)
 	status = Label.new()
 	status.position = Vector2(16, 146)
@@ -495,10 +563,34 @@ func clear_anchors() -> void:
 
 func setup_sim() -> void:
 	_build_level()
+	# THE LEVEL OWNS ITS SLOT. One slot per level, still one slot per level -
+	# the "no second save" contract is about there being no earlier state of
+	# THIS run to go back to, and a lab run is not an earlier state of the
+	# traverse. Sharing the file would make every switch a mutual wipe:
+	# load_from already refuses a save whose level_fingerprint does not match
+	# (verified in tests/lab_gate.gd L4), and the very next autosave would then
+	# overwrite the run it just refused. Refusal alone is not enough; the
+	# refused run has to still be somewhere.
+	save_path = SAVE_PATH_LAB if level_id == "lab" else SAVE_PATH
 	_reset()
 	_av_size()
 
 func _build_level() -> void:
+	# TWO LEVELS, ONE OF WHICH MAY NOT MOVE. The shipped traverse is hashed by
+	# level_fingerprint() into every tape and into the player's save, so this
+	# branch exists precisely so that adding a second level cannot touch the
+	# first: --level lab builds different arrays, and the default path below is
+	# the same statements in the same order it always was.
+	# tests/hashrun.gd must still print 2762505307938286422 and
+	# tests/tape_verify.gd must still PASS 6 tapes - both checked in
+	# tests/lab_gate.gd, L1 and L2.
+	t_a.clear(); t_b.clear()
+	if level_id == "lab":
+		_build_lab()
+	else:
+		_build_traverse()
+
+func _build_traverse() -> void:
 	# Terrain: y-down, up is negative. Hand-placed, deterministic.
 	#
 	# GEOMETRY CONTRACT (measured, not assumed - see tests/throw_probe.gd):
@@ -541,18 +633,7 @@ func _build_level() -> void:
 		t_b.append(pts[i + 1])
 	# left wall, wound bottom-to-top so its outward normal points into the level
 	t_a.append(Vector2(-14, -8)); t_b.append(Vector2(-14, 0))
-	t_n.clear()
-	t_lo.clear()
-	t_hi.clear()
-	var deepest := -1e9
-	for i in t_a.size():
-		deepest = maxf(deepest, maxf(t_a[i].y, t_b[i].y))
-	world_bottom = deepest + 4.0
-
-	for i in t_a.size():
-		t_n.append(Vector2((t_b[i] - t_a[i]).y, -(t_b[i] - t_a[i]).x).normalized())
-		t_lo.append(Vector2(minf(t_a[i].x, t_b[i].x), minf(t_a[i].y, t_b[i].y)))
-		t_hi.append(Vector2(maxf(t_a[i].x, t_b[i].x), maxf(t_a[i].y, t_b[i].y)))
+	_finish_terrain()
 
 	# Beams. DOOR beams sit 1.4 m past each lip: 2.2 m over the tier you
 	# throw from, 5.2 m over the tier you swing in - the only kind you can
@@ -577,26 +658,191 @@ func _build_level() -> void:
 		[42.8,  4.5, 0.10],
 		[50.6,  7.5, 0.10],
 	]
+	# No jam anchors and no captions on the traverse: every beam here is the
+	# ordinary kind, and it teaches by shape and position rather than by text.
 	for a: Array in anchors:
-		a_pos.append(Vector2(a[0], a[1]))
-		a_r.append(a[2])
-		a_theta.append(0.0)
-		a_lockidx.append(-1)
-		a_freelen.append(-1.0)
-		a_half.append(0)
-		a_pinidx.append(-1)
-		a_pinpt.append(Vector2.ZERO)
-		a_locked.append(-1)
-		a_armed.append(1)
-		a_pin0.append(-1)
-		a_pend.append(0)
-		a_ength.append(0.0)
-		a_minth.append(0.0)
-		a_wlo.append(0)
-		a_whi.append(0)
-		a_paytick.append(0)
-		a_prun.append(0)
-		a_clear.append(0)
+		_add_anchor(Vector2(a[0], a[1]), a[2], 0, "")
+
+func _finish_terrain() -> void:
+	# Shared by both levels, and unchanged from when only one existed: derive
+	# the out-of-world line from the terrain rather than hardcoding it (a
+	# literal 6.0 survived the level being terraced down to y=12 and teleported
+	# anyone standing on the last two tiers back to spawn), then the outward
+	# normals and the per-segment boxes.
+	t_n.clear()
+	t_lo.clear()
+	t_hi.clear()
+	var deepest := -1e9
+	for i in t_a.size():
+		deepest = maxf(deepest, maxf(t_a[i].y, t_b[i].y))
+	world_bottom = deepest + 4.0
+
+	for i in t_a.size():
+		t_n.append(Vector2((t_b[i] - t_a[i]).y, -(t_b[i] - t_a[i]).x).normalized())
+		t_lo.append(Vector2(minf(t_a[i].x, t_b[i].x), minf(t_a[i].y, t_b[i].y)))
+		t_hi.append(Vector2(maxf(t_a[i].x, t_b[i].x), maxf(t_a[i].y, t_b[i].y)))
+
+func _add_anchor(p: Vector2, r: float, jam: int, nm: String) -> void:
+	# One place that knows how wide the anchor tables are, so a level cannot
+	# add a beam and forget a column - which is the same hand-kept-list defect
+	# SNAP_SKIP's comment is about, arriving by copy-paste instead.
+	a_pos.append(p)
+	a_r.append(r)
+	a_jam.append(jam)
+	a_name.append(nm)
+	a_theta.append(0.0)
+	a_lockidx.append(-1)
+	a_freelen.append(-1.0)
+	a_half.append(0)
+	a_pinidx.append(-1)
+	a_pinpt.append(Vector2.ZERO)
+	a_locked.append(-1)
+	a_armed.append(1)
+	a_pin0.append(-1)
+	a_pend.append(0)
+	a_ength.append(0.0)
+	a_minth.append(0.0)
+	a_wlo.append(0)
+	a_whi.append(0)
+	a_paytick.append(0)
+	a_prun.append(0)
+	a_clear.append(0)
+
+# --------------------------------------------------------------- THE LAB --
+# A BENCH, NOT A TRAVERSE. --level lab. One flat floor you can walk end to
+# end, four stations in a row, each anchor alone with nothing else in reach,
+# and every one of them inside the envelope tests/throw_probe.gd measured: a
+# 5.25 m whip locks an anchor about 3 m above the floor it is thrown from, at
+# 1.5-2.5 m of lead. Nothing here can be missed into a fall, because there is
+# nothing to fall off; the cost of a bad throw is the walk back.
+#
+# WHAT IS AND IS NOT IN HERE, and this is the whole result of the probes:
+#
+# NOT SHIPPED - THE V NOTCH (the briefed jam/slot: mouth open, narrowing at
+# the back). Measured dead. 0 of 84 cells on the first sweep and 0 of 168
+# placements on the settled re-sweep - every half-angle 0-25 deg, every throat
+# 0.015-0.045, every depth 0.15-0.60, on-axis and offset - against a 0.7 N
+# noise floor on a 91 N scale. It is loaded backwards: a hanging body pulls
+# the rope toward the WIDE end, so the wedge unloads exactly as it takes
+# load. Worse, _collide_point's rescue branch passes pen = 0.0 on purpose when
+# the far wall finds a particle on its solid side, so a slot NARROWER than the
+# rope gets LESS friction, not more, and the lateral wall pushes come out as
+# axial ejection: the tip left a 3-25 deg notch in 0.050 s at 11.4 m/s, twenty
+# times what gravity would give.
+#
+# NOT SHIPPED - THE FORK (two circles with a throat, or a slot that pinches
+# the rope against itself). The second half of that idea is not buildable at
+# all: THIS SIM HAS NO ROPE-ON-ROPE CONTACT. _collide() runs anchors, terrain,
+# body and points, and never a particle PAIR - measured, 72.6% of the 7679
+# corpus ticks have two non-adjacent particles overlapping, deepest 0.0952 m,
+# a whole handle-end rope diameter. A hairpin with two strands in the throat
+# behaves identically to one strand. What DOES hold is a thickness jam, and it
+# is disqualified rather than unbuilt: hanging on one with the hand SHUT sank
+# 0.086 m at 80.3 N, and with the hand OPEN sank 0.000 m at 80.0 N - the same
+# rig, the same tick, and an ordinary wrap beside it fell 44.1 m when the hand
+# opened. It also destroys the mechanic it was meant to supply: 60 throws at a
+# plain beam give 11 pinches / 7 locks / 7 greens, and at a 0.08 m fork 0 / 0
+# / 0.
+#
+# NOT SHIPPED - THE HOURGLASS CHOCKSTONE, which is the one geometry that
+# really does hold: wide mouth, funnel narrowing UPWARD to a 0.045 m throat,
+# blind pocket above it. 36/36 catches from searched throws, 91.0 N sustained,
+# 0.0000 m of tip drift over 10 s. It is left out because of what it holds
+# WITH: over 10 s, taut and open-hand runs are bit-identical to four decimals
+# on every geometry tested (+0.0280 m taut, +0.0280 m open; 91.00 N both).
+# The rope holds through _solve_rope and terrain collision alone, so no wrap
+# engages, a_freelen stays -1, _holds() is never true, and not one of the ten
+# voices or their visual twins can speak - every one of them is keyed to an
+# anchor index. That is a place in the world where the grip button is
+# decorative, which is the exact failure the design contract at the top of
+# this file names.
+#
+# SHIPPED - THE JAM ANCHOR, which is the brief's other verb ("make the pinch
+# for the player") written as an anchor instead of as geometry. See _pinch.
+func _build_lab() -> void:
+	# ONE FLOOR, WALLED AT BOTH ENDS, x -12..20 at y = 0.
+	#
+	# THE RIGHT WALL IS AT 20 for a camera reason that is load-bearing:
+	# CAM_VOLS[0] ends at x = 19 with CAM_HYST 1.5, so a body that never gets
+	# past x = 20.5 never steps the shelf and the whole bench is one fixed shot
+	# at tier-0 height. Put a station past that and the camera drops 3 m to a
+	# floor the lab does not have. A wall at 20 stops the body at 19.72
+	# (BODY_R 0.28).
+	#
+	# THE LEFT WALL IS AT -12 for a reason found by photographing it: _reset
+	# lays the chain out trailing behind the body, so at tick 0 the tip sits at
+	# spawn.x - 0.4 - 5.20 = -10.2 m. A wall at -8 put 2.2 m of whip inside the
+	# rock before the first tick ran, and the first frame of the level showed
+	# the rope through the wall. -12 clears that by 1.8 m. The traverse has the
+	# same clearance and it is not an accident there either - its wall is at
+	# -14 against the same spawn.
+	var pts: Array[Vector2] = [
+		Vector2(-12, -8), Vector2(-12, 0),      # left wall, wound bottom-to-top
+		Vector2(20, 0),                         # the bench floor
+		Vector2(20, -8),                        # right wall, wound top-to-bottom
+	]
+	# Wound so that normalize(ab.y, -ab.x) points into the AIR on every segment,
+	# which is what _collide_point's rescue branch needs to lift a particle OUT
+	# of a solid rather than park it under one: up the left wall gives (1,0),
+	# left-to-right along the floor gives (0,-1), down the right wall gives
+	# (-1,0). tests/lab_gate.gd L3 tests every segment both ways rather than
+	# taking this paragraph's word for it.
+	for i in range(pts.size() - 1):
+		t_a.append(pts[i])
+		t_b.append(pts[i + 1])
+	_finish_terrain()
+
+	# NO FLAG AND NO FINISH. A bench is not a route, so goal_x is put past the
+	# right wall where the body cannot reach it: nothing here should ever say
+	# TRAVERSE COMPLETE, and _draw skips the flag at this distance.
+	goal_x = 999.0
+	goal_y = 0.0
+
+	# THE STATIONS. 6.5 m apart, which is the smallest spacing that keeps them
+	# genuinely in isolation: the whole rope lives inside a 6.40 m circle around
+	# the body (5.25 m of chain + 1.15 m of arm), and hanging on one station
+	# puts the body ~2.5 m under it, so the next anchor is sqrt(6.5^2+2.5^2) =
+	# 6.96 m away and cannot be touched by accident. You learn one anchor at a
+	# time because you can only reach one at a time.
+	#
+	# Heights are 2.2 m, which is what the school beams are and what school.tape
+	# catches from a standstill, except the last which is 2.9 m - just inside
+	# the ~3 m ceiling throw_probe measured, and the only station here that is
+	# meant to cost you attempts.
+	#
+	#          x     y     r    jam  name
+	var stations := [
+		# 1. THE REFERENCE. Identical in radius and height to the first school
+		#    beam of the shipped level (-2.0, -2.2, 0.22), and placed at the same
+		#    2.6 m of lead from the same spawn, so the throw that works here is
+		#    literally the throw that works there. Nothing is being taught yet.
+		[ -2.0, -2.2, 0.22, 0, "BEAM"],
+		# 2. SAME VERB, LESS BEAM. The door-beam radius from the traverse. A
+		#    thinner beam takes a shorter wrap to turn through the same angle, so
+		#    the throw has to arrive with more of the tail past it. Ordinary
+		#    anchor: this station is difficulty, not vocabulary.
+		[  4.5, -2.2, 0.11, 0, "THIN BEAM"],
+		# 3. THE NEW WORD. r = 0.14 sits between the door beams (0.11) and the
+		#    school beams (0.20-0.22) so it reads as its own class at a glance
+		#    without a caption - the caption is there anyway, because this is a
+		#    lab. Same height as station 1 on purpose: the ONLY thing that differs
+		#    between them is what it takes to make it hold.
+		[ 11.0, -2.2, 0.14, 1, "JAM"],
+		# 4. THE SAME WORD, THROWN HARDER - and 2.5 m, not the 2.9 m this bench
+		#    first shipped with. At 2.9 the station was not difficult, it was
+		#    luck: 3 winning strokes in 108, a press window of 3 ticks (50 ms),
+		#    and a lead basin of 64 cells in TEN separate blocks, two of them a
+		#    single 2.5 mm wide. There is no RNG in this sim, so every one of
+		#    those outcomes is repeatable - but a player cannot stand to 2.5 mm
+		#    or press to 50 ms, so the SAME INTENTION took sometimes and not
+		#    others, which is the one thing this game has ruled out. Difficulty
+		#    here lives in stroke shape, where it is learnable, and not in
+		#    height: 121 of 121 lead cells across +/-150 mm hold at every other
+		#    station on this bench.
+		[ 17.5, -2.5, 0.14, 1, "JAM HIGH"],
+	]
+	for a: Array in stations:
+		_add_anchor(Vector2(a[0], a[1]), a[2], int(a[3]), String(a[4]))
 
 func _reset() -> void:
 	pos.resize(NP); prv.resize(NP)
@@ -1520,6 +1766,49 @@ static func _seg_cross(a: Vector2, b: Vector2, c: Vector2, d: Vector2) -> Vector
 	return a + r * t
 
 func _pinch(k: int) -> bool:
+	# THE JAM ANCHOR: the level has made the crossing for you.
+	#
+	# This is the ONE new rule the lab adds, and it is one line of physics
+	# rather than one of geometry, because geometry was measured and does not
+	# work. Three separate probes swept 25 terrain and anchor shapes for a
+	# jam the rope could not escape; the two that held - an hourglass
+	# chockstone and a two-circle throat - both hold by collision alone, so
+	# neither engages a wrap, and hanging on one with the hand OPEN is
+	# bit-identical to hanging on it with the hand SHUT (+0.0280 m vs
+	# +0.0280 m over 10 s, 91.00 N both). A shape that holds you regardless of
+	# your hand is a shape where the grip button is decorative.
+	#
+	# So the jam is declared instead of built. _pinch is this file's own
+	# definition of "a wrap that can hold a body", every consequence of a hold
+	# hangs off it, and a jam anchor simply answers yes while the rope is
+	# genuinely touching. NOTHING ELSE CHANGES, and that is the point: the
+	# catch still needs a fresh grip inside GRIP_WINDOW, a_lockidx still has to
+	# clear pin_min_idx, PINCH_RUN still has to run, _holds() still gates the
+	# ring on a_locked == 1, and _update_locks' hand-open branch still drops
+	# a_freelen, a_pinidx and a_locked in one frame. Measured on the bench
+	# (tests/lab_gate.gd L6): hand shut, the body hangs; hand open, it falls.
+	#
+	# WHAT THE PLAYER GAINS is not a new verb but a new promise - a jam anchor
+	# is a beam you do not have to earn the crossing on, so it takes from
+	# angles a wrap will not. What they DO NOT gain is a second set of rules.
+	#
+	# "Touching" is the same band _update_locks uses to decide which chain was
+	# in the wrap when it engaged (a_r + p_rad + wrap_shell + 0.02), and not
+	# the far looser wrap_near of 0.30 m: winding measured about a beam the
+	# rope is nowhere near is not a wrap on it, and a jam that fired at 0.30 m
+	# would catch on a whip merely flying past.
+	# k < size, because this repo is full of probes that build an anchor by
+	# appending to a_pos alone; a jam column they never heard of must not
+	# crash them, it must read as 0.
+	if k < a_jam.size() and a_jam[k] == 1:
+		# THE FLOOR COMES FIRST, so a jam can never hold what it cannot show.
+		if absf(a_theta[k]) < jam_min_th:
+			return false
+		var cj := a_pos[k]
+		for i in NP:
+			if (pos[i] - cj).length() < a_r[k] + p_rad[i] + wrap_shell + 0.02:
+				return true
+		return false
 	# Does the chain actually CROSS ITSELF against this beam? That crossing is
 	# the self-pinch - the only thing that can physically hold a body on a
 	# beam, and what the lock threshold always claimed to stand for. Deciding
@@ -1752,14 +2041,17 @@ func _draw() -> void:
 	# terrain
 	for s in t_a.size():
 		draw_line(t_a[s] * PPM, t_b[s] * PPM, Color(0.32, 0.35, 0.42), 6.0)
-	# goal flag
-	var gp := Vector2(goal_x + 1.5, 12.0) * PPM
-	draw_line(gp, gp + Vector2(0, -2.2) * PPM, Color(0.5, 0.5, 0.55), 3.0)
-	draw_colored_polygon(PackedVector2Array([
-		gp + Vector2(0, -2.2) * PPM,
-		gp + Vector2(0.8, -1.9) * PPM,
-		gp + Vector2(0, -1.6) * PPM,
-	]), Color(0.9, 0.55, 0.2))
+	# goal flag. Skipped where there is no goal: the lab parks goal_x past its
+	# own right wall, and a flag no one can reach is a promise the level is not
+	# making.
+	if goal_x < 900.0:
+		var gp := Vector2(goal_x + 1.5, goal_y) * PPM
+		draw_line(gp, gp + Vector2(0, -2.2) * PPM, Color(0.5, 0.5, 0.55), 3.0)
+		draw_colored_polygon(PackedVector2Array([
+			gp + Vector2(0, -2.2) * PPM,
+			gp + Vector2(0.8, -1.9) * PPM,
+			gp + Vector2(0, -1.6) * PPM,
+		]), Color(0.9, 0.55, 0.2))
 
 	# anchors + wrap instrumentation (present-state only)
 	for k in a_pos.size():
@@ -1767,6 +2059,28 @@ func _draw() -> void:
 		var r := a_r[k] * PPM
 		draw_circle(c, r, Color(0.55, 0.48, 0.38))
 		draw_circle(c, r * 0.55, Color(0.4, 0.35, 0.28))
+		# A JAM ANCHOR IS A DIFFERENT MARK AT THE SAME ANCHOR, never a different
+		# truth value: the ring above still goes green on _holds() and nothing
+		# else, because the moment a jam's arc means something a wrap's arc does
+		# not, the one instrument the player trusts has two dialects. So the
+		# class is drawn OUTSIDE the instrumentation radius - a pale collar at
+		# r + 3 px, under the arc's r + 8 - and it says what this thing IS, not
+		# how it is going.
+		if k < a_jam.size() and a_jam[k] == 1:
+			draw_arc(c, r + 3.0, 0.0, TAU, 20, Color(0.62, 0.72, 0.55, 0.85), 2.0)
+		# THE NAME, under the anchor. Present on the lab bench and empty on the
+		# traverse, which is not a compromise: a lab exists to name things and a
+		# route does not, and captions on the traverse would also change what a
+		# shipped frame looks like in every camera test that photographs one.
+		if k < a_name.size() and a_name[k] != "":
+			var fnt := ThemeDB.fallback_font
+			# r + 32 px, not r + 20: the wrap arc lives at r + 8 and its slip
+			# ring at r + 13, and at 20 the caption was drawn straight through
+			# the green - seen in the first frame of station 3. The instrument
+			# wins the space it needs; the label goes under it.
+			draw_string(fnt, c + Vector2(-70.0, r + 32.0), a_name[k],
+				HORIZONTAL_ALIGNMENT_CENTER, 140.0, 15,
+				Color(0.72, 0.76, 0.84, 0.9))
 		var th := absf(a_theta[k])
 		if th > 0.3:
 			# Three states, three readings - the amber ring used to mean all of
@@ -2482,6 +2796,7 @@ func _fnv(h: int, v: float) -> int:
 const SAVE_MAGIC := 0x57485031        # "WHP1"
 const SAVE_VERSION := 1
 const SAVE_PATH := "user://run.save"
+const SAVE_PATH_LAB := "user://run_lab.save"
 const AUTOSAVE_TICKS := 30            # half a second: the most a crash can cost
 
 # WHAT IS THE SIMULATION is answered by the object, not by a list kept by hand.
@@ -2492,6 +2807,21 @@ const AUTOSAVE_TICKS := 30            # half a second: the most a crash can cost
 # every planning candidate it restores carries one field from another timeline
 # and nothing anywhere says so. Declare a var and it is in the snapshot.
 const SNAP_SKIP := ["external_drive", "save_enabled", "save_path", "save_due",
+	# WHICH LEVEL IS LOADED IS NOT SIMULATION STATE, it is what the simulation
+	# was built FROM. _build_level has already run by the time restore() is
+	# reached, so these are correct for the level in front of you; restoring a
+	# lab's a_jam into a traverse would be the partial-restore defect this
+	# whole key-set rule exists to refuse. It also keeps the key SET identical
+	# to the one every committed tape's start state was written with - three
+	# new vars outside SNAP_SKIP would refuse all six tapes and the player's
+	# save on the next boot, which is a steep price for a caption.
+	# LAB FURNITURE, not simulation. jam_min_th sits here with them for the same
+	# reason: snapshot() derives its key set from get_property_list(), so a new var
+	# moves the layout and restore() refuses every tape and save on disk. A tuning
+	# constant that never changes inside a run is not worth re-recording the corpus
+	# for - and re-recording is not free, it is the deliberate loss of the only
+	# regression test this project has against the behaviour it has today.
+	"level_id", "a_jam", "a_name", "goal_y", "jam_min_th",
 	# THE CAMERA IS NOT THE SIMULATION either, and by the same argument as the
 	# audio below it: cam_st is a pure function of a finished tick's body
 	# position and velocity, it feeds nothing back, and a save that carried it
@@ -2964,6 +3294,10 @@ func _boot_session() -> void:
 			pp = nxt; i += 1
 		elif a == "--note":
 			note = nxt; i += 1
+		elif a == "--level":
+			# already consumed by _cmdline_level() before the level was built;
+			# swallow its argument here so it cannot be read as another flag
+			i += 1
 		i += 1
 	if pp != "":
 		# A REPLAY NEVER WRITES YOUR SAVE. Watching a tape is not playing - and
@@ -3006,6 +3340,17 @@ func _boot_session() -> void:
 		rec_path = _res(rp)
 		rec_begin(note)
 		print("RECORDING to %s" % rec_path)
+
+static func _cmdline_level() -> String:
+	# godot --path . -- --level lab. Static, and read straight from the command
+	# line, because _build_level needs it and _build_level runs before
+	# _boot_session does. Anything other than "lab" is the shipped traverse,
+	# which is also what no flag at all means - the default is the default.
+	var args := OS.get_cmdline_user_args()
+	for i in args.size():
+		if args[i] == "--level" and i + 1 < args.size():
+			return args[i + 1]
+	return ""
 
 static func _res(p: String) -> String:
 	# a bare "tapes/door.tape" means the project, not the shell's directory

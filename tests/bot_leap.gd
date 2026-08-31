@@ -310,12 +310,6 @@ static func leap_step(m: Node2D, st: Dictionary, prev_body: Vector2) -> Array:
 # Every mutable field of the sim. Snapshotting lets a search re-run only the
 # part it varies (the throw) instead of re-pumping for every sample; there is no
 # RNG, so a restored state replays bit-identically (asserted in section 0).
-const STATE_KEYS := ["pos", "prv", "body_pos", "body_prv", "taut", "tick_count",
-	"grip_edge", "cursor_m", "target_m", "a_theta", "a_lockidx", "a_freelen",
-	"a_half", "a_pinidx", "a_pinpt", "a_paytick", "a_locked", "a_armed",
-	"a_pin0", "a_pend", "a_ength", "a_minth", "a_wlo", "a_whi", "a_lastth",
-	"a_shed", "a_prun", "tip_speed", "crack_cooldown", "crack_flash",
-	"slipping", "grounded", "run_ticks", "finished", "falls"]
 
 # A packed array handed out by get() SHARES its buffer with the sim's own field:
 # without this duplicate, running one variant corrupted the snapshot and the
@@ -327,15 +321,18 @@ static func _dup(v: Variant) -> Variant:
 			return v.duplicate()
 	return v
 
+# The planner used to copy sim state through a hand-kept list of var names,
+# STATE_KEYS. That list went stale the moment main.gd changed: it still named
+# a_lastth and a_shed after both were deleted with the coil modes, and had
+# never heard of a_clear, which drives the anchor re-arm - so every candidate
+# the planner restored carried a field from a different timeline, silently.
+# main.gd's own snapshot() enumerates get_property_list(), so it cannot go
+# stale: declare a var and it is saved.
 static func save_state(m: Node2D) -> Dictionary:
-	var d := {}
-	for k in STATE_KEYS:
-		d[k] = _dup(m.get(k))
-	return d
+	return m.snapshot()
 
 static func load_state(m: Node2D, d: Dictionary) -> void:
-	for k in STATE_KEYS:
-		m.set(k, _dup(d[k]))
+	m.restore(d)
 
 # -------------------------------------------------------------------- rigs --
 

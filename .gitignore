@@ -18,3 +18,7 @@ tests/drag_*.gd
 tests/*_drag.gd
 tests/tier_check.gd
 tests/orc_*.gd
+
+# the single autosave slot - a live run, not source
+run.save
+run.save.tmp

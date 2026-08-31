@@ -289,6 +289,7 @@ var sfx_rasp: AudioStreamPlayer
 func _ready() -> void:
 	if pos.size() == 0:
 		setup_sim()
+	_boot_session()   # resume the run in progress, or record / replay a tape
 
 	cam = Camera2D.new()
 	cam.position_smoothing_enabled = true
@@ -496,18 +497,33 @@ func _reset() -> void:
 func _input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and not event.echo:
 		if event.keycode == KEY_R:
-			_reset()
+			# DEFERRED, so that restarting is part of a TICK. R is the one verb
+			# that is not (cursor, grip), and a tape that could not carry it
+			# would replay a session containing an R press as a session that
+			# never restarted - silently, and wrongly. Applying it at the top of
+			# step_tick puts it inside the recorded input stream instead.
+			pending_reset = true
 		elif event.keycode == KEY_ESCAPE:
 			get_tree().quit()
 
 func _physics_process(_d: float) -> void:
 	if external_drive:
 		return
+	if play_on:
+		_play_tick()
+		cam.position = (body_pos + Vector2(0.0, -1.4) + _body_vel() * 0.25) * PPM
+		return
+	if play_done:
+		return                        # a finished replay holds its last frame
 	var mouse := get_global_mouse_position() / PPM
 	var grip := Input.is_key_pressed(KEY_SPACE) \
 		or Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT)
 	step_tick(mouse, grip)
 	cam.position = (body_pos + Vector2(0.0, -1.4) + _body_vel() * 0.25) * PPM
+	save_due -= 1
+	if save_enabled and save_due <= 0:
+		save_due = AUTOSAVE_TICKS
+		save_to(save_path)
 
 func _process(_d: float) -> void:
 	queue_redraw()
@@ -516,10 +532,20 @@ func _process(_d: float) -> void:
 		var line := "time %.1fs   falls %d   tip %.0f m/s" % [secs, falls, tip_speed]
 		if finished:
 			line = "TRAVERSE COMPLETE in %.1fs - press R to run it again" % secs
+		if rec_on:
+			line += "   [REC %d]" % rec_cur.size()
+		elif play_on:
+			line += "   [REPLAY %d/%d]" % [play_at, int(play_tape["n"])]
+		elif play_done:
+			line += "   [REPLAY ENDED]"
 		status.text = line
 
 # ---------------------------------------------------------------- sim tick --
 func step_tick(cursor_world_m: Vector2, grip: bool) -> void:
+	rec_rst = pending_reset
+	if pending_reset:
+		pending_reset = false
+		_reset()
 	if grip and not taut:
 		grip_edge = tick_count        # the hand just closed: this is the catch
 	taut = grip
@@ -540,6 +566,8 @@ func step_tick(cursor_world_m: Vector2, grip: bool) -> void:
 	_measure_wraps()
 	_update_locks()
 	_events()
+	if rec_on:
+		_rec_tick()
 
 func _body_vel() -> Vector2:
 	return (body_pos - body_prv) / SDT
@@ -1454,3 +1482,492 @@ func _fnv(h: int, v: float) -> int:
 	for b in bits:
 		h = int((h ^ b) * 1099511628211) & 0x7FFFFFFFFFFFFFFF
 	return h
+
+# ------------------------------------------------------------ save / resume --
+# THE RUN IS THE SAVE. One slot, overwritten continuously while you play, and
+# loading it puts you back exactly where you were - mid-fall, mid-wrap,
+# mid-betrayal, mid-coil. That is the design and not a shortcut: this is a
+# Getting Over It lineage game with diegetic loss and no checkpoints, so
+# save-scumming is not forbidden by a rule, it is structurally absent. There is
+# no earlier state to go back to, because the game never keeps one. Quit while
+# falling and you resume falling. R restarts, and it discards the whole run.
+#
+# PLATFORM CAVEAT, and it is a real one. A save (and a tape) resumes
+# bit-identically on the SAME BUILD on the SAME PLATFORM, and nowhere else. The
+# sim has no RNG, a fixed tick and a fixed substep count, but IEEE 754 does not
+# oblige two architectures to agree on sin/cos/sqrt/acos and x86 and ARM
+# measurably do not. Nothing here assumes otherwise: state carried to a
+# different machine simply diverges, and the tape verifier says so out loud
+# rather than passing quietly.
+const SAVE_MAGIC := 0x57485031        # "WHP1"
+const SAVE_VERSION := 1
+const SAVE_PATH := "user://run.save"
+const AUTOSAVE_TICKS := 30            # half a second: the most a crash can cost
+
+# WHAT IS THE SIMULATION is answered by the object, not by a list kept by hand.
+# Every script variable is state unless it is named here or is a node. A
+# hand-kept list goes stale in silence, which is not hypothetical: the planner's
+# own STATE_KEYS in tests/bot_leap.gd still names a_lastth and a_shed - deleted
+# fields, both - and has never heard of a_clear, which drives the re-arm, so
+# every planning candidate it restores carries one field from another timeline
+# and nothing anywhere says so. Declare a var and it is in the snapshot.
+const SNAP_SKIP := ["external_drive", "save_enabled", "save_path", "save_due",
+	"rec_on", "rec_path", "rec_cur", "rec_grip", "rec_chk", "rec_start",
+	"rec_note", "rec_cen", "rec_prev", "rec_rst",
+	"play_on", "play_done", "play_tape", "play_at"]
+
+var save_enabled := false             # only a real windowed session writes to
+                                      # disk. The probes build the sim with
+                                      # new() and never enter the tree, so
+                                      # _ready never fires and no test can
+                                      # touch a save file by accident.
+var save_path := SAVE_PATH
+var save_due := 0
+var pending_reset := false            # R, applied at the top of the next tick
+
+static func _dup(v: Variant) -> Variant:
+	# A packed array handed out by get() shares its buffer with the field it
+	# came from, so a snapshot that did not copy would be rewritten by the very
+	# ticks it is supposed to outlive.
+	match typeof(v):
+		TYPE_PACKED_VECTOR2_ARRAY, TYPE_PACKED_FLOAT32_ARRAY, \
+		TYPE_PACKED_FLOAT64_ARRAY, TYPE_PACKED_INT32_ARRAY, \
+		TYPE_PACKED_INT64_ARRAY, TYPE_PACKED_BYTE_ARRAY, \
+		TYPE_PACKED_STRING_ARRAY, TYPE_ARRAY, TYPE_DICTIONARY:
+			return v.duplicate()
+	return v
+
+func snap_keys() -> PackedStringArray:
+	var out := PackedStringArray()
+	for p in get_property_list():
+		if (int(p["usage"]) & PROPERTY_USAGE_SCRIPT_VARIABLE) == 0:
+			continue
+		if int(p["type"]) == TYPE_OBJECT:
+			continue
+		var n: String = p["name"]
+		if SNAP_SKIP.has(n):
+			continue
+		out.append(n)
+	return out
+
+func snapshot() -> Dictionary:
+	var s := {}
+	for k in snap_keys():
+		s[k] = _dup(get(k))
+	return {"v": SAVE_VERSION, "lvl": level_fingerprint(), "h": state_hash(),
+		"s": s}
+
+func restore(d: Dictionary) -> bool:
+	# Bit-identical, and asserted rather than asserted-by-comment:
+	# tests/save_test.gd snapshots mid-air, mid-wrap, mid-betrayal and while the
+	# whip is coiled, runs 300 ticks on from each, restores, runs the same 300,
+	# and requires one hash - matching an uninterrupted run as well.
+	if int(d.get("v", -1)) != SAVE_VERSION:
+		return false
+	var s: Dictionary = d.get("s", {})
+	if s.is_empty():
+		return false
+	# THE KEY SET HAS TO MATCH EXACTLY. A var added, renamed or deleted since
+	# this state was written means the file describes a different simulation,
+	# and applying the keys that happen to still exist would restore a body from
+	# one build wearing another build's wrap state - the same partial-restore
+	# defect as a stale hand-kept list, arriving by file instead. Refuse it and
+	# say so. If the new var is not simulation state, it belongs in SNAP_SKIP;
+	# if it is, the state genuinely is not portable and the tapes want
+	# re-recording anyway.
+	var keys := snap_keys()
+	if s.size() != keys.size():
+		return false
+	for k in keys:
+		if not s.has(k):
+			return false
+	for k in s:
+		set(k, _dup(s[k]))
+	return true
+
+func level_fingerprint() -> int:
+	# Identity of the WORLD a save or a tape was taken in: terrain, beams,
+	# spawn, goal, and the fixed shape of the sim. Deliberately NOT of the sim's
+	# BEHAVIOUR - hashing this file would make every edit invalidate every tape,
+	# and tapes that are thrown away on every edit test nothing. A behaviour
+	# change is meant to surface as a hash divergence at the tick it starts. A
+	# LEVEL change is a different failure - the recorded cursor no longer refers
+	# to anything - so that one is refused up front with its own message.
+	var h := 1469598103934665603
+	h = _fnv(h, float(NP))
+	h = _fnv(h, float(SUB))
+	h = _fnv(h, float(t_a.size()))
+	h = _fnv(h, float(a_pos.size()))
+	for i in t_a.size():
+		h = _fnv(h, t_a[i].x); h = _fnv(h, t_a[i].y)
+		h = _fnv(h, t_b[i].x); h = _fnv(h, t_b[i].y)
+	for k in a_pos.size():
+		h = _fnv(h, a_pos[k].x); h = _fnv(h, a_pos[k].y); h = _fnv(h, a_r[k])
+	h = _fnv(h, spawn.x); h = _fnv(h, spawn.y)
+	h = _fnv(h, goal_x); h = _fnv(h, world_bottom)
+	return h
+
+func save_to(path: String) -> bool:
+	# Write beside the save and rename over it, so a crash mid-write costs the
+	# last half second and not the run.
+	var f := FileAccess.open(path + ".tmp", FileAccess.WRITE)
+	if f == null:
+		return false
+	f.store_32(SAVE_MAGIC)
+	f.store_32(SAVE_VERSION)
+	f.store_var(snapshot(), false)
+	f.close()
+	var dir := DirAccess.open(path.get_base_dir())
+	if dir == null:
+		return false
+	return dir.rename(path.get_file() + ".tmp", path.get_file()) == OK
+
+func load_from(path: String) -> int:
+	# 1 resumed, 0 nothing to resume, -1 refused (wrong build or wrong level).
+	# The .tmp fallback catches the one crash window the rename leaves open.
+	for p: String in [path, path + ".tmp"]:
+		if not FileAccess.file_exists(p):
+			continue
+		var f := FileAccess.open(p, FileAccess.READ)
+		if f == null:
+			continue
+		if f.get_32() != SAVE_MAGIC or f.get_32() != SAVE_VERSION:
+			continue
+		var d: Variant = f.get_var(false)
+		if typeof(d) != TYPE_DICTIONARY:
+			continue
+		if int((d as Dictionary).get("lvl", 0)) != level_fingerprint():
+			return -1
+		return 1 if restore(d) else -1
+	return 0
+
+# ------------------------------------------------------------- input tapes --
+# A tape is the game's ENTIRE input surface - (cursor, grip) per tick, plus the
+# one deferred R - together with the state it started from and the hashes it
+# produced. Replaying it asks the only question that needs no oracle: does the
+# game still do what it did yesterday?
+#
+# That matters here more than another probe would. In one session three separate
+# gates were found to be quietly lying - a drape test that passed a build which
+# caught drapes on every beam radius, a stuck-in-floor probe carrying the old
+# level geometry hardcoded so it reported a bug 0.79 m in mid-air, and a level
+# probe certifying a safety contract from a hand-laid chain state no real run
+# ever produces. Every one of them needed an oracle to catch. A replay needs
+# none, and it cannot certify a hand-laid state, because its start state and its
+# inputs both came from a run that actually happened.
+#
+# Checkpoint hashes every TAPE_CHECK ticks localise a divergence to half a
+# second instead of "somewhere in this minute". The census is recorded so a tape
+# cannot be vacuous without saying so: a tape whose census reads zero locks is
+# not testing locks, and it prints that at you.
+const TAPE_MAGIC := 0x57545031        # "WTP1"
+const TAPE_VERSION := 1
+const TAPE_CHECK := 30                # ticks between checkpoint hashes
+
+var rec_on := false
+var rec_path := ""
+var rec_cur := PackedVector2Array()
+var rec_grip := PackedByteArray()     # bit 0 = grip, bit 1 = R this tick
+var rec_chk := PackedInt64Array()
+var rec_start := {}
+var rec_note := ""
+var rec_cen := {}
+var rec_prev := {}
+var rec_rst := false
+var play_on := false
+var play_done := false
+var play_tape := {}
+var play_at := 0
+
+func rec_begin(note := "") -> void:
+	rec_start = snapshot()
+	rec_note = note
+	rec_cur = PackedVector2Array()
+	rec_grip = PackedByteArray()
+	rec_chk = PackedInt64Array()
+	rec_cen = {"catch": 0, "lock": 0, "pay": 0, "slide": 0, "dismount": 0,
+		"unwind": 0, "fall": 0, "crack": 0, "gnd": 0, "air": 0, "wrapped": 0,
+		"airrun": 0, "maxdrop": 0.0, "maxtip": 0.0, "crawl": 0.0,
+		"reset": 0, "x0": 0.0, "x1": 0.0}
+	# Seed the transition detectors from the state the tape STARTS in. Left
+	# empty, an anchor that is already engaged when recording begins reads as a
+	# fresh catch on tick 1 - a census that counts a catch no one made is the
+	# same species of lie as a gate that passes on nothing.
+	var e0 := PackedByteArray()
+	var l0 := PackedByteArray()
+	var p0 := PackedInt32Array()
+	e0.resize(a_pos.size()); l0.resize(a_pos.size()); p0.resize(a_pos.size())
+	for k in a_pos.size():
+		e0[k] = 1 if a_freelen[k] >= 0.0 else 0
+		l0[k] = 1 if (e0[k] == 1 and a_locked[k] == 1) else 0
+		p0[k] = a_pinidx[k] if e0[k] == 1 else -1
+	rec_prev = {"eng": e0, "lk": l0, "pin": p0, "falls": falls,
+		"flash": crack_flash, "bx": body_pos.x, "airtop": body_pos.y,
+		"airrun": 0}
+	rec_on = true
+
+func rec_end() -> void:
+	rec_on = false
+
+func _rec_tick() -> void:
+	rec_cur.append(cursor_m)
+	rec_grip.append((1 if taut else 0) | (2 if rec_rst else 0))
+	if rec_rst:
+		rec_cen["reset"] = int(rec_cen["reset"]) + 1
+	rec_rst = false
+	# --- census: what this tape actually contains, counted from the same code
+	# on the way in and on the way out, so record and replay cannot disagree
+	# about the question they are asking.
+	var c := rec_cen
+	var n := a_pos.size()
+	var pe: PackedByteArray = rec_prev.get("eng", PackedByteArray())
+	var pp: PackedInt32Array = rec_prev.get("pin", PackedInt32Array())
+	var pl: PackedByteArray = rec_prev.get("lk", PackedByteArray())
+	if pe.size() != n:
+		pe.resize(n); pl.resize(n); pp.resize(n)
+		for k in n:
+			pp[k] = -1
+	var wrapped := false
+	for k in n:
+		var e := 1 if a_freelen[k] >= 0.0 else 0
+		if e == 1:
+			wrapped = true
+		if e == 1 and pe[k] == 0:
+			c["catch"] = int(c["catch"]) + 1
+		elif e == 0 and pe[k] == 1:
+			# how the wrap ended, told apart the way _update_locks tells them
+			# apart: an open hand is a dismount, a re-armed anchor unwound on
+			# its own, and anything else ran out of tail and slid off.
+			if not taut:
+				c["dismount"] = int(c["dismount"]) + 1
+			elif a_armed[k] == 1:
+				c["unwind"] = int(c["unwind"]) + 1
+			else:
+				c["slide"] = int(c["slide"]) + 1
+		var lk := 1 if (e == 1 and a_locked[k] == 1) else 0
+		if lk == 1 and pl[k] == 0:
+			c["lock"] = int(c["lock"]) + 1
+		if e == 1 and pp[k] >= 0 and a_pinidx[k] > pp[k]:
+			c["pay"] = int(c["pay"]) + 1
+		pe[k] = e
+		pl[k] = lk
+		pp[k] = a_pinidx[k] if e == 1 else -1
+	rec_prev["eng"] = pe
+	rec_prev["lk"] = pl
+	rec_prev["pin"] = pp
+	if wrapped:
+		c["wrapped"] = int(c["wrapped"]) + 1
+	var run := int(rec_prev.get("airrun", 0))
+	var top := float(rec_prev.get("airtop", body_pos.y))
+	var px := float(rec_prev.get("bx", body_pos.x))
+	if grounded:
+		c["gnd"] = int(c["gnd"]) + 1
+		c["crawl"] = float(c["crawl"]) + maxf(body_pos.x - px, 0.0)
+		run = 0
+		top = body_pos.y
+	else:
+		c["air"] = int(c["air"]) + 1
+		if run == 0:
+			top = body_pos.y
+		run += 1
+		c["airrun"] = maxi(int(c["airrun"]), run)
+		c["maxdrop"] = maxf(float(c["maxdrop"]), body_pos.y - top)
+	rec_prev["airrun"] = run
+	rec_prev["airtop"] = top
+	rec_prev["bx"] = body_pos.x
+	c["maxtip"] = maxf(float(c["maxtip"]), tip_speed)
+	c["fall"] = int(c["fall"]) + maxi(falls - int(rec_prev.get("falls", falls)), 0)
+	rec_prev["falls"] = falls
+	if crack_flash >= 1.0 and float(rec_prev.get("flash", 0.0)) < 1.0:
+		c["crack"] = int(c["crack"]) + 1
+	rec_prev["flash"] = crack_flash
+	if rec_cur.size() == 1:
+		c["x0"] = body_pos.x
+	c["x1"] = body_pos.x
+	if rec_cur.size() % TAPE_CHECK == 0:
+		rec_chk.append(state_hash())
+
+func tape_of() -> Dictionary:
+	return {"v": TAPE_VERSION, "lvl": level_fingerprint(), "n": rec_cur.size(),
+		"h": state_hash(), "chk": rec_chk.duplicate(), "note": rec_note,
+		"cen": rec_cen.duplicate(), "start": rec_start,
+		"cur": rec_cur.duplicate(), "grip": rec_grip.duplicate(), "ok": true,
+		"err": ""}
+
+func tape_save(path: String) -> bool:
+	var t := tape_of()
+	var f := FileAccess.open(path, FileAccess.WRITE)
+	if f == null:
+		return false
+	f.store_32(TAPE_MAGIC)
+	f.store_32(TAPE_VERSION)
+	f.store_64(int(t["lvl"]))
+	f.store_32(int(t["n"]))
+	f.store_64(int(t["h"]))
+	f.store_var(t["chk"])
+	f.store_var(t["note"])
+	f.store_var(t["cen"])
+	f.store_var(t["start"], false)
+	f.store_var(t["cur"])       # 8 bytes a tick: the cursor, exactly as passed
+	f.store_var(t["grip"])      # 1 byte a tick
+	f.close()
+	return true
+
+static func tape_load(path: String) -> Dictionary:
+	var bad := {"ok": false, "err": "", "n": 0}
+	if not FileAccess.file_exists(path):
+		bad["err"] = "no such tape"
+		return bad
+	var f := FileAccess.open(path, FileAccess.READ)
+	if f == null:
+		bad["err"] = "unreadable"
+		return bad
+	if f.get_32() != TAPE_MAGIC:
+		bad["err"] = "not a tape"
+		return bad
+	var ver := f.get_32()
+	if ver != TAPE_VERSION:
+		bad["err"] = "tape format v%d, this build reads v%d" % [ver, TAPE_VERSION]
+		return bad
+	var t := {"ok": true, "err": ""}
+	t["lvl"] = f.get_64()
+	t["n"] = f.get_32()
+	t["h"] = f.get_64()
+	t["chk"] = f.get_var()
+	t["note"] = f.get_var()
+	t["cen"] = f.get_var()
+	t["start"] = f.get_var(false)
+	t["cur"] = f.get_var()
+	t["grip"] = f.get_var()
+	if typeof(t["cur"]) != TYPE_PACKED_VECTOR2_ARRAY \
+			or typeof(t["grip"]) != TYPE_PACKED_BYTE_ARRAY \
+			or (t["cur"] as PackedVector2Array).size() != int(t["n"]) \
+			or (t["grip"] as PackedByteArray).size() != int(t["n"]):
+		bad["err"] = "truncated tape"
+		return bad
+	return t
+
+func tape_begin_play(t: Dictionary) -> bool:
+	# restore the state the tape was recorded from, then feed its inputs back
+	# through the ONE input surface the game has
+	if not bool(t.get("ok", false)):
+		return false
+	if int(t.get("lvl", 0)) != level_fingerprint():
+		return false
+	if not restore(t["start"]):
+		return false
+	play_tape = t
+	play_at = 0
+	play_on = true
+	play_done = false
+	return true
+
+func tape_feed() -> bool:
+	# one recorded tick; false when the tape has run out
+	var cur: PackedVector2Array = play_tape["cur"]
+	var grp: PackedByteArray = play_tape["grip"]
+	if play_at >= cur.size():
+		return false
+	pending_reset = (grp[play_at] & 2) != 0
+	step_tick(cur[play_at], (grp[play_at] & 1) != 0)
+	play_at += 1
+	return true
+
+func _play_tick() -> void:
+	if tape_feed():
+		return
+	play_on = false
+	play_done = true
+	var ok := state_hash() == int(play_tape["h"])
+	print("REPLAY %s  %d ticks  hash %d (recorded %d)" % [
+		"PASS" if ok else "FAIL - DIVERGED", play_at, state_hash(),
+		int(play_tape["h"])])
+	# On a screen the last frame is left up to be looked at. With no screen
+	# there is nothing to look at and a verdict to return, so report and go.
+	if DisplayServer.get_name() == "headless":
+		get_tree().quit(0 if ok else 1)
+
+# ---------------------------------------------------------- session set-up --
+func _boot_session() -> void:
+	# godot --path . -- [--fresh] [--record FILE [--note TEXT]] [--replay FILE]
+	var args := OS.get_cmdline_user_args()
+	var fresh := false
+	var rp := ""
+	var pp := ""
+	var note := ""
+	var i := 0
+	while i < args.size():
+		var a: String = args[i]
+		var nxt: String = args[i + 1] if i + 1 < args.size() else ""
+		if a == "--fresh":
+			fresh = true
+		elif a == "--record":
+			rp = nxt; i += 1
+		elif a == "--replay":
+			pp = nxt; i += 1
+		elif a == "--note":
+			note = nxt; i += 1
+		i += 1
+	if pp != "":
+		# A REPLAY NEVER WRITES YOUR SAVE. Watching a tape is not playing - and
+		# a replay that FAILS to start does not write it either, which is why
+		# every branch here leaves save_enabled false rather than falling
+		# through to a normal session that would overwrite the run on file.
+		pp = _res(pp)
+		var t := tape_load(pp)
+		var why := ""
+		if not bool(t.get("ok", false)):
+			why = str(t.get("err", "unreadable"))
+		elif int(t.get("lvl", 0)) != level_fingerprint():
+			why = "recorded on a different level"
+		elif not tape_begin_play(t):
+			why = "the tape's start state was refused"
+		if why == "":
+			print("REPLAY %s: %d ticks - %s" % [pp, int(t["n"]), str(t["note"])])
+		else:
+			push_error("replay: %s (%s)" % [why, pp])
+			print("replay: %s (%s). Not playing, and NOT saving - " % [why, pp] \
+				+ "your run on file is untouched.")
+			if DisplayServer.get_name() == "headless":
+				get_tree().quit(1)
+		return
+	if fresh:
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(save_path))
+		DirAccess.remove_absolute(
+			ProjectSettings.globalize_path(save_path + ".tmp"))
+	else:
+		match load_from(save_path):
+			1:
+				print("resumed at %.1fs, %d falls, x %.2f" % [
+					run_ticks / 60.0, falls, body_pos.x])
+			-1:
+				print("save refused: it was written for another level or " \
+					+ "another format. Starting a fresh run.")
+	save_enabled = true
+	save_due = AUTOSAVE_TICKS
+	if rp != "":
+		rec_path = _res(rp)
+		rec_begin(note)
+		print("RECORDING to %s" % rec_path)
+
+static func _res(p: String) -> String:
+	# a bare "tapes/door.tape" means the project, not the shell's directory
+	if p.begins_with("res://") or p.begins_with("user://") or p.is_absolute_path():
+		return p
+	return "res://" + p
+
+func _notification(what: int) -> void:
+	# Persist on every exit path there is: the window's close button, Esc (which
+	# tears the tree down), and the engine's own crash handler. Between those
+	# and the half-second autosave there is no ordinary way to leave the game
+	# that rewinds the run.
+	if what != NOTIFICATION_WM_CLOSE_REQUEST and what != NOTIFICATION_EXIT_TREE \
+			and what != NOTIFICATION_CRASH:
+		return
+	if not save_enabled:
+		return
+	save_to(save_path)
+	if rec_on and rec_path != "":
+		rec_end()
+		if tape_save(rec_path):
+			print("tape written: %s (%d ticks)" % [rec_path, rec_cur.size()])

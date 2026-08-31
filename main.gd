@@ -1980,19 +1980,42 @@ func _holds(k: int) -> bool:
 	# drift apart - a voice that disagreed with its twin would break parity
 	# silently, and only for the players who cannot hear it.
 	#
-	# Green means the rope has crossed itself AND there is enough tail past the
-	# wrap for that crossing to be real. A wrap made from far away pinches on
-	# its own draped tail, classifies green, and tears off the moment a swing
-	# straightens that tail out; if there is less chain past the wrap than a
-	# pinch needs, say so now. Both halves are facts about the geometry as it
-	# stands - present state, not prediction: a tell, not a trap.
-	if a_freelen[k] < 0.0 or a_locked[k] != 1:
-		return false
-	if a_pinidx[k] >= 0:
-		var tail: float = cum_len[NP - 1] - cum_len[a_pinidx[k]]
-		if tail < PINCH_TURN * TAU * (a_r[k] + 0.02):
-			return false
-	return true
+	# Green means the sim has classified this wrap LOCKED, and that is the whole
+	# rule. A locked wrap does not pay out and does not let go: the only ways out
+	# of one are to unwind it back under th_part or to open your hand. That is a
+	# fact about the state as it stands - present, not predicted: a tell, not a
+	# trap.
+	#
+	# THERE WAS A SECOND CLAUSE HERE AND IT WAS MEASURED OUT. It demanded three
+	# quarters of a turn of chain PAST the pin, reasoning that a wrap made from
+	# far away can pinch on its own draped tail, classify green, and tear off
+	# when a swing straightens that tail out. The instinct was sound. The test
+	# was not: it asks whether enough tail is LEFT to make a pinch, when _pinch
+	# has already run and already said one exists. What it actually measured was
+	# WHERE ALONG THE WHIP YOU CAUGHT - catch near the tip and no tail remains to
+	# satisfy it, however good the wrap.
+	#
+	# Scored on a recorded human session plus the corpus (tests/ring_score.gd)
+	# against the one oracle that needs no judgement - did the wrap survive, with
+	# the hand never opening:
+	#
+	#     candidate                    trust 0.5s   1.5s     4s    reach
+	#     locked + tail past pin           96.5%  99.1%   100%    42.5%
+	#     locked                           98.0%  99.6%   100%   100.0%
+	#
+	# It was not a cautious guard that cost a little coverage. It was LESS
+	# truthful than no clause at all - the greens it kept survived less often
+	# than the greens it threw away - while hiding 57.5% of the locks that really
+	# held. Over that session the player was locked on for 3654 ticks and the
+	# ring was green for 2049: for 44% of the time the whip was carrying them,
+	# the ring said it would betray. Two catches held for nine seconds in amber,
+	# and the player reported it as the whip failing to hook.
+	#
+	# The draped tail it was aimed at is a real shape and is NOT answered here.
+	# Nothing in the corpus reproduces one. When a case turns up it wants a test
+	# of what the CROSSING IS MADE OF - tail against tail, or tail around beam -
+	# and not of how much rope happens to be left over.
+	return a_freelen[k] >= 0.0 and a_locked[k] == 1
 
 func _wrap_tension() -> float:
 	# WHAT THE WRAP IS CARRYING, in newtons, this tick: your weight resolved

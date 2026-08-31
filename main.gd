@@ -887,6 +887,24 @@ func _input(event: InputEvent) -> void:
 			# never restarted - silently, and wrongly. Applying it at the top of
 			# step_tick puts it inside the recorded input stream instead.
 			pending_reset = true
+		elif (event.keycode == KEY_F or event.keycode == KEY_G) and rec_on:
+			# MARK THIS MOMENT, AND SAY WHICH KIND IT WAS. Guarded on rec_on, so
+			# the keys are inert in an ordinary session and the game is
+			# byte-for-byte the game it was; --record is the whole opt-in. LATCHED
+			# rather than acted on, because _input runs on the FRAME: stamping a
+			# tick from here would stamp whichever tick happened to be next, or
+			# none at all on a dropped frame. _rec_tick spends it on the next tick
+			# it records.
+			#
+			# TWO KEYS RATHER THAN ONE, because the two complaints are questions
+			# about different code and want different evidence. F is "it was green
+			# and it let go anyway" - a question about _holds and the exits out of
+			# a lock. G is "that should have caught and did not" - a question
+			# about the five clauses of the catch. One key would leave the player
+			# to remember afterwards which mark was which, and a mark whose meaning
+			# is recalled an hour later is worth less than one that names itself at
+			# the instant it is pressed.
+			rec_mk = MARK_GREEN if event.keycode == KEY_F else MARK_NOHOOK
 		elif event.keycode == KEY_ESCAPE:
 			_av_stop()   # leave quietly; see _notification
 			get_tree().quit()
@@ -930,7 +948,17 @@ func _process(d: float) -> void:
 		if finished:
 			line = "TRAVERSE COMPLETE in %.1fs - press R to run it again" % secs
 		if rec_on:
-			line += "   [REC %d]" % rec_cur.size()
+			line += "   [REC %d   F = green dropped me   G = should have hooked   marks %d]" % [rec_cur.size(), rec_mark.size()]
+			# A MARK THAT IS NOT ACKNOWLEDGED GETS PRESSED TWICE, and two presses
+			# a second apart are two different moments to whoever reads the tape.
+			# Two seconds of the mark's own number and the second it landed on:
+			# enough to know it registered, and it names the thing the player is
+			# about to describe.
+			if rec_mark.size() > 0 \
+					and rec_cur.size() - rec_mark[rec_mark.size() - 1] < 120:
+				line += "   MARK %d %s @ %.1fs" % [rec_mark.size(),
+					MARK_NAME[rec_mkind[rec_mkind.size() - 1]],
+					rec_mark[rec_mark.size() - 1] / 60.0]
 		elif play_on:
 			line += "   [REPLAY %d/%d]" % [play_at, int(play_tape["n"])]
 		elif play_done:
@@ -2447,7 +2475,8 @@ const SNAP_SKIP := ["external_drive", "save_enabled", "save_path", "save_due",
 	# would be a save whose key set no longer matched the tapes on disk.
 	"cam_st", "mouse_owned",
 	"rec_on", "rec_path", "rec_cur", "rec_grip", "rec_chk", "rec_start",
-	"rec_note", "rec_cen", "rec_prev", "rec_rst",
+	"rec_note", "rec_cen", "rec_prev", "rec_rst", "rec_mark", "rec_mkind",
+	"rec_mk",
 	"play_on", "play_done", "play_tape", "play_at",
 	# AUDIO AND ITS VISUAL TWINS ARE NOT THE SIMULATION. Every one of these is
 	# derived from a finished tick and feeds nothing back, so none of them
@@ -2618,6 +2647,25 @@ var rec_note := ""
 var rec_cen := {}
 var rec_prev := {}
 var rec_rst := false
+# THE BUG MARKER, and the reason it exists. A tape is worth exactly as much as
+# your ability to find the moment inside it, and the moment belongs to the
+# player: "it lit green and it still unhooked" is a report about one tick, not
+# about a session. F stamps the tick the player was looking at when they said
+# so; the tape carries the stamps beside the input rather than inside it, and
+# tests/mark_look.gd replays the tape and dumps the full lock state either side
+# of every stamp.
+#
+# NEITHER OF THESE IS SIMULATION STATE, which is not a claim but the reason
+# they are in SNAP_SKIP two hundred lines up: rec_mk is an edge latched by
+# _input and consumed by _rec_tick AFTER the tick has already been computed,
+# and rec_mark is an index list that nothing in the sim ever reads. A marked
+# tape and an unmarked one feed step_tick the same bytes in the same order.
+const MARK_GREEN := 1                 # F: the ring was green and it let go
+const MARK_NOHOOK := 2                # G: that should have caught and did not
+const MARK_NAME := ["", "GREEN DROPPED ME", "SHOULD HAVE HOOKED"]
+var rec_mark := PackedInt32Array()    # tape indices the player marked
+var rec_mkind := PackedInt32Array()   # MARK_* per entry of rec_mark
+var rec_mk := 0                       # kind latched since the last recorded tick
 var play_on := false
 var play_done := false
 var play_tape := {}
@@ -2648,6 +2696,9 @@ func rec_begin(note := "") -> void:
 	rec_prev = {"eng": e0, "lk": l0, "pin": p0, "falls": falls,
 		"flash": crack_flash, "bx": body_pos.x, "airtop": body_pos.y,
 		"airrun": 0}
+	rec_mark = PackedInt32Array()
+	rec_mkind = PackedInt32Array()
+	rec_mk = 0
 	rec_on = true
 
 func rec_end() -> void:
@@ -2656,6 +2707,13 @@ func rec_end() -> void:
 func _rec_tick() -> void:
 	rec_cur.append(cursor_m)
 	rec_grip.append((1 if taut else 0) | (2 if rec_rst else 0))
+	# Stamped against the tick that has JUST FINISHED - the same tick the ring
+	# the player is complaining about was drawn from - and stored beside the
+	# stream, never in it, so the mark cannot change what the sim was fed.
+	if rec_mk != 0:
+		rec_mark.append(rec_cur.size() - 1)
+		rec_mkind.append(rec_mk)
+		rec_mk = 0
 	if rec_rst:
 		rec_cen["reset"] = int(rec_cen["reset"]) + 1
 	rec_rst = false
@@ -2735,8 +2793,9 @@ func tape_of() -> Dictionary:
 	return {"v": TAPE_VERSION, "lvl": level_fingerprint(), "n": rec_cur.size(),
 		"h": state_hash(), "chk": rec_chk.duplicate(), "note": rec_note,
 		"cen": rec_cen.duplicate(), "start": rec_start,
-		"cur": rec_cur.duplicate(), "grip": rec_grip.duplicate(), "ok": true,
-		"err": ""}
+		"cur": rec_cur.duplicate(), "grip": rec_grip.duplicate(),
+		"mark": rec_mark.duplicate(), "mkind": rec_mkind.duplicate(),
+		"ok": true, "err": ""}
 
 func tape_save(path: String) -> bool:
 	var t := tape_of()
@@ -2754,6 +2813,13 @@ func tape_save(path: String) -> bool:
 	f.store_var(t["start"], false)
 	f.store_var(t["cur"])       # 8 bytes a tick: the cursor, exactly as passed
 	f.store_var(t["grip"])      # 1 byte a tick
+	# APPENDED, AND LAST, ON PURPOSE. Everything above is byte-for-byte the v1
+	# layout, so the six tapes already on disk still load and still verify - a
+	# reader that runs out of file simply has no marks. Bumping TAPE_VERSION
+	# would have refused every one of them, which is a steep price for a field
+	# the simulation never reads.
+	f.store_var(t["mark"])
+	f.store_var(t["mkind"])
 	f.close()
 	return true
 
@@ -2783,6 +2849,30 @@ static func tape_load(path: String) -> Dictionary:
 	t["start"] = f.get_var(false)
 	t["cur"] = f.get_var()
 	t["grip"] = f.get_var()
+	# A tape written before the marker existed ends here, and that is not an
+	# error: no marks is a fact about the tape, not a fault in it.
+	t["mark"] = PackedInt32Array()
+	t["mkind"] = PackedInt32Array()
+	if f.get_position() < f.get_length():
+		var mk: Variant = f.get_var()
+		if typeof(mk) == TYPE_PACKED_INT32_ARRAY:
+			t["mark"] = mk
+	# The KIND of each mark is a second appended field, read the same way and
+	# for the same reason: a tape written by the one-key build has marks but no
+	# kinds, and that is a fact about the tape rather than a fault in it. A
+	# missing kind reads as 0, which MARK_NAME renders as the empty string.
+	if f.get_position() < f.get_length():
+		var mi: Variant = f.get_var()
+		if typeof(mi) == TYPE_PACKED_INT32_ARRAY:
+			t["mkind"] = mi
+	# Assigned back through a local ON PURPOSE: a PackedInt32Array is a value
+	# type here, so appending to t["mkind"] in place would grow a temporary
+	# and leave the dictionary untouched - a loop with no exit.
+	var mkinds: PackedInt32Array = t["mkind"]
+	var nmark := (t["mark"] as PackedInt32Array).size()
+	while mkinds.size() < nmark:
+		mkinds.append(0)
+	t["mkind"] = mkinds
 	if typeof(t["cur"]) != TYPE_PACKED_VECTOR2_ARRAY \
 			or typeof(t["grip"]) != TYPE_PACKED_BYTE_ARRAY \
 			or (t["cur"] as PackedVector2Array).size() != int(t["n"]) \
@@ -2928,4 +3018,5 @@ func _notification(what: int) -> void:
 	if rec_on and rec_path != "":
 		rec_end()
 		if tape_save(rec_path):
-			print("tape written: %s (%d ticks)" % [rec_path, rec_cur.size()])
+			print("tape written: %s (%d ticks, %d marks)" % [rec_path,
+				rec_cur.size(), rec_mark.size()])

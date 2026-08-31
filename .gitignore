@@ -22,3 +22,20 @@ tests/orc_*.gd
 # the single autosave slot - a live run, not source
 run.save
 run.save.tmp
+
+# bug takes: recorded human sessions, evidence not source
+takes/
+
+# transient agent scratch from the catch investigation
+tests/disc/
+tests/dt/
+tests/ip/
+tests/rc/
+tests/zz/
+tests/rel/
+tests/rlv/
+tests/rp/
+tests/rv/
+tests/vfy/
+tests/vr/
+tests/vr2/

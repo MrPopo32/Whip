@@ -1359,11 +1359,34 @@ func _collide_point(i: int, pr: float) -> void:
 			if sd < pr:
 				if sd < 0.0:
 					# rescue: carry the velocity it arrived with, so the
-					# lift-out displacement never becomes velocity
+					# lift-out displacement never becomes velocity.
+					#
+					# THE PENETRATION IS CONTINUOUS ACROSS sd = 0, and it did
+					# not used to be. This branch handed _friction pen = 0.0
+					# while the branch a hair away handed it pr - sd, so a
+					# particle crossing the surface lost its entire friction
+					# cap in one step: measured 4.26 m/s of tangential speed at
+					# the tip, 14.40 at the handle, invariant under 10^8 of
+					# refinement. A particle DEEPER in the solid gripped LESS
+					# than one resting on it, which is the "a narrow slot grips
+					# less, not more" result from the jam investigation, and it
+					# is backwards. Capping the lift at pr keeps the deep case
+					# from inflating the cap without bound.
+					#
+					# BE CLEAR ABOUT WHAT THIS BUYS, WHICH IS NOTHING TODAY.
+					# Across all six tapes plus the player's own recorded
+					# session - 30436 ticks, 486976 substeps - this branch
+					# fires ZERO times, against 5.8M in-span contacts beside
+					# it. The golden hash and all six tapes are unchanged by
+					# this edit, which is the proof that it is unreachable in
+					# play. It is written down because the next person to build
+					# geometry that DOES reach it (a slot, a notch, a corner)
+					# would otherwise meet a 14 m/s step and spend a day on it.
 					var v := pos[i] - prv[i]
+					var lift := minf(pr - sd, pr)
 					pos[i] = q + n * pr
-					prv[i] = pos[i] - v
-					_friction(i, n, ground_mu, 0.0)
+					prv[i] = pos[i] - (v + n * lift)
+					_friction(i, n, ground_mu, lift)
 				else:
 					pos[i] = q + n * pr
 					_friction(i, n, ground_mu, pr - sd)

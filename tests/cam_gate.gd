@@ -61,15 +61,19 @@ func _process(_d: float) -> bool:
 	frames += 1
 	if frames == 1:
 		# main.gd, for real, so C2 measures the SHIPPED cursor functions rather
-		# than a copy of their arithmetic. save_path is redirected first and
-		# save_enabled dropped straight after: _ready defers to _boot_session,
-		# which turns saving on for an ordinary session, and this gate must not
-		# put a run the player never played over the one slot.
+		# than a copy of their arithmetic. setup_sim() runs FIRST, because it
+		# re-derives save_path from level_id (main.gd, "THE LEVEL OWNS ITS
+		# SLOT") and silently undoes a redirect made before it; then the
+		# redirect; then add_child, whose _ready skips setup_sim (pos is built)
+		# and runs _boot_session synchronously against the scratch path; then
+		# save_enabled is dropped straight after, because _boot_session turns
+		# saving on for an ordinary session and this gate must not put a run
+		# the player never played over the one slot.
 		root.size = Vector2i(1600, 900)
 		m = MAIN.new()
 		m.external_drive = true
-		m.save_path = "user://cam_gate_scratch.save"
 		m.setup_sim()
+		m.save_path = "user://cam_gate_scratch.save"
 		root.add_child(m)
 		m.save_enabled = false
 		if m.mouse_owned:

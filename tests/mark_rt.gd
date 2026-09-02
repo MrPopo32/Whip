@@ -39,9 +39,9 @@ extends SceneTree
 ## R5  BACKWARD COMPATIBILITY. The six tapes on disk were written before the
 ##     marker existed. They must still load, and read as zero marks - which is
 ##     a fact about those tapes, not a fault in them.
-## R6  THE KEY IS FREE, read out of the source rather than remembered: KEY_F
-##     must appear exactly once in main.gd and the project must define no
-##     input actions that could shadow it.
+## R6  THE KEYS ARE FREE, read out of the source rather than remembered: KEY_F
+##     and KEY_G must appear only inside the marker branch of _input, and the
+##     project must define no input actions that could shadow them.
 const MAIN := preload("res://main.gd")
 const TL := preload("res://tests/tapelib.gd")
 const DIR := "res://tapes"
@@ -83,12 +83,15 @@ func _process(_d: float) -> bool:
 		                                  # so a real-sized window is the
 		                                  # honest one to drive
 		m = MAIN.new()
-		# save_path is redirected BEFORE the node enters the tree and
-		# save_enabled is cleared the instant _ready has run: _boot_session
-		# turns saving on for an ordinary session, and no test may ever be the
-		# thing that writes the player's one slot.
-		m.save_path = SCRATCH_SAVE
+		# setup_sim() FIRST: it re-derives save_path from level_id (main.gd,
+		# "THE LEVEL OWNS ITS SLOT"), so a redirect made before it is silently
+		# undone. Then the redirect; then add_child, whose _ready skips
+		# setup_sim (pos is built) and runs _boot_session against the scratch
+		# path; then save_enabled is cleared the instant _ready has run, because
+		# _boot_session turns saving on for an ordinary session and no test may
+		# ever be the thing that writes the player's one slot.
 		m.setup_sim()
+		m.save_path = SCRATCH_SAVE
 		root.add_child(m)
 		m.save_enabled = false
 		m.rec_begin("mark_rt live path")
@@ -239,9 +242,25 @@ func _r7() -> void:
 	for f2 in [R7_SAVE, R7_SAVE + ".tmp", R7_TAPE]:
 		DirAccess.remove_absolute(ProjectSettings.globalize_path(f2))
 	var m2: Node2D = MAIN.new()
-	m2.save_path = R7_SAVE
-	m2.setup_sim()
-	root.add_child(m2)                 # _ready -> _boot_session
+	m2.setup_sim()                     # FIRST: setup_sim() re-derives save_path
+	m2.save_path = R7_SAVE             # from level_id (main.gd, "THE LEVEL OWNS
+	                                   # ITS SLOT"), so a redirect made before it
+	                                   # is silently undone - which is how this
+	                                   # test wrote the player's run.save once
+	_ok("the scratch path survived setup_sim and is not the player's slot",
+		m2.save_path == R7_SAVE and m2.save_path != MAIN.SAVE_PATH,
+		m2.save_path)
+	if m2.save_path != R7_SAVE:
+		m2.free()
+		return
+	root.add_child(m2)                 # _ready -> _boot_session (setup_sim is
+	                                   # skipped: pos is already built)
+	_ok("and _ready left it alone", m2.save_path == R7_SAVE, m2.save_path)
+	if m2.save_path != R7_SAVE:
+		m2.save_enabled = false        # never the thing that writes the slot
+		root.remove_child(m2)
+		m2.free()
+		return
 	m2.external_drive = true           # ...and this test drives the ticks
 	_ok("_boot_session turned saving on (the tape write sits behind it)",
 		bool(m2.save_enabled), "save_path %s" % str(m2.save_path))
@@ -467,7 +486,7 @@ func _r5() -> void:
 # ================================================= R6, the key is actually free
 func _r6() -> void:
 	print("")
-	print("=== R6  KEY_F IS NOT BOUND TO ANYTHING ELSE ===")
+	print("=== R6  KEY_F AND KEY_G ARE NOT BOUND TO ANYTHING ELSE ===")
 	var src := FileAccess.get_file_as_string("res://main.gd")
 	var keys: Dictionary = {}
 	var rx := RegEx.new()
@@ -481,9 +500,11 @@ func _r6() -> void:
 	for k: String in names:
 		line.append("%s x%d" % [k, int(keys[k])])
 	print("  keycodes named in main.gd: %s" % ", ".join(line))
-	_ok("KEY_F appears exactly once", int(keys.get("KEY_F", 0)) == 1)
+	_ok("KEY_F and KEY_G each appear only in the marker branch",
+		int(keys.get("KEY_F", 0)) == 2 and int(keys.get("KEY_G", 0)) == 1)
 	_ok("and it is the marker branch",
-		src.count("elif event.keycode == KEY_F and rec_on:") == 1)
+		src.count("elif (event.keycode == KEY_F or event.keycode == KEY_G) and rec_on:") == 1
+		and src.count("MARK_GREEN if event.keycode == KEY_F else MARK_NOHOOK") == 1)
 	var pg := FileAccess.get_file_as_string("res://project.godot")
 	_ok("project.godot defines no input actions that could shadow it",
 		not pg.contains("[input]"))

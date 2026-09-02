@@ -134,7 +134,7 @@ func _ring() -> void:
 	print("RING CENSUS. For every stroke in the 108-cell grid that CAUGHT, the")
 	print("wrap angle |theta| at the catch tick, and then, over a 3 s hang with")
 	print("the floor removed, how many held ticks draw NO instrument at all")
-	print("(main.gd:2049 gates the arc on |theta| > 0.3).")
+	print("(_draw gates the arc on |theta| > 0.3).")
 	print("")
 	print(" station        cue    jam  caught green | th@catch dark/caught | hangs dark/heldticks mingap(mm)")
 	var m0 := new_lab()

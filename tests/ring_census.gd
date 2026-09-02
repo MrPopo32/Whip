@@ -5,9 +5,12 @@ extends SceneTree
 ##
 ##   godot --headless --path . -s res://tests/ring_census.gd -- takes/bug1.tape
 ##
-## _holds() is stricter than a_locked == 1: it also demands enough tail past the
-## pin for the crossing to be real. So a catch made near the TIP locks, carries
-## the player, and is drawn amber the whole time. This counts that.
+## _holds() was stricter than a_locked == 1 - it also demanded enough tail past
+## the pin - so a catch made near the TIP locked, carried the player, and was
+## drawn amber the whole time (5 of 25 locks never green, 44% of locked ticks
+## amber on bug1.tape). 1aa17d8 made the ring exactly a_locked == 1. This is
+## the census that found it, kept so the next predicate change can be scored
+## the same way; on the shipped build it should read every lock as shown.
 const TL := preload("res://tests/tapelib.gd")
 
 func _initialize() -> void:

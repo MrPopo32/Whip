@@ -452,6 +452,7 @@ func _initialize() -> void:
 	if fail.is_empty():
 		print("PASS  lab gates L1-L7")
 		quit(0)
+		return   # the last quit() wins: without this the exit code was 1
 	for f in fail:
 		print("FAIL  %s" % f)
 	quit(1)

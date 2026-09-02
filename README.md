@@ -2,7 +2,7 @@
 
 A playable greybox of the whip-locomotion concept: a fully-simulated tapered
 verlet chain is your only tool and only means of movement. No engine physics,
-no RNG, no assists.
+no RNG, no assists (one named exception, in the lab).
 
 ## Run it
 
@@ -27,26 +27,59 @@ There is a second level, a flat teaching bench - see **THE LAB** below:
 | release | SLACK — throw, shape waves, crack |
 | R | Restart (discards the run) |
 | Esc | Quit (the run is saved) |
+| F / G | only while `--record`: stamp this tick on the tape. F = "it was green and it let go", G = "that should have hooked and did not". Inert in an ordinary session |
+
+**On a trackpad, use Space.** The hand opens on a single false tick with no
+debounce, by design (release is one frame; `main.gd`'s hand-open branch says
+`HAND OPEN = OFF THE BEAM, THIS TICK`), and a trackpad click-hold is the easiest
+thing in the world to lose for 17 ms without noticing. `tests/grip_census.gd`
+reads the grip byte off a recorded session and separates a release from a slip
+by the length of the gap; on the player's own take, 3 of 42 gaps were short
+enough to be slips, and each one, if a wrap was live, ended that wrap outright.
+Before blaming the sim for a drop, check the byte.
 
 ## How to play
 
 - The whip only *pulls*. To go anywhere: throw the tip over a beam while
-  SLACK, and the moment it winds on, HOLD taut to catch.
+  SLACK, and **close your hand as it winds on**. Grip is a trigger, not a
+  latch: a wrap can only take in the quarter second after your hand shuts,
+  never merely because it happens to be shut — holding the button early is a
+  throw, not a catch.
 - The arc drawn at an anchor is the measured wrap angle (present-state
   instrumentation, not a prediction). **Amber** = partial — it will catch you,
-  then betray you within a second. **Green** = a full turn — locked, it holds
-  anything.
-- A locked wrap is a commitment: to leave it, release at the swing's dead
-  point and send a wave up the taut chain to unwind it — or just go slack
-  and dangle while you think.
+  then betray you: under load it pays one segment of rope through the wrap
+  every quarter second, audibly, until the whip runs off its own end. How long
+  that takes is how much tail you caught it with — about a second from a tip
+  catch, longer from a deep one. **Green** = the rope has crossed itself on the
+  beam — locked, it holds anything until you unwind it or open your hand.
+  Green is exactly the sim's own verdict and nothing more. It used to demand a
+  second thing — enough tail past the pin — and on a recorded session that
+  clause hid 5 of 25 locks entirely and called amber for 44% of the time the
+  whip was carrying the player; scored against whether the wrap actually
+  survived, the greens it kept did *worse* than the ones it threw away. It is
+  gone (`1aa17d8`). If the ring says green and you fall, your hand opened —
+  check the grip byte before anything else.
+- A locked wrap holds for exactly as long as your hand is shut. There is no
+  dangling on it: open your hand and you leave the beam that tick, wherever
+  along the chain it caught (`1f6f83e`). Release is your launch, so time it —
+  the dead point of the swing is where the throw goes furthest. The other way
+  off is to unwind it, by sending a wave up the taut chain until the measured
+  arc falls back under the catch threshold.
 - Pump the swing while hanging, release at the dead point, re-throw mid-air.
   That loop is the whole game.
-- Crack the whip (a sharp stroke reversal) — the bang is the skill bell.
+- Crack the whip (a sharp stroke reversal) — the bang is the skill bell, and
+  it is only a bell: no energy is shed and nothing in the world is hit.
+  **Striking was measured and not built.** The crack can be aimed, but one
+  motion covers 87.5% of everything that can be struck — darts, not golf — the
+  crack event fires 3–5 m from where you aimed it, and the tip's precision
+  floor (see *What determinism buys*) kills any target under about a metre. A
+  verb whose whole envelope fits inside one stroke is not a verb; it is a
+  button with a windup.
 
 ## The traverse (76 m, five tiers, 12 m of descent)
 
 A staircase that runs DOWNHILL, floors at y = 0, 3, 6, 9, 12. Every drop faces
-along the route, so the lash gait - which crawls flat ground at ~0.44 m/s and
+along the route, so the lash gait - which crawls flat ground at ~0.42 m/s and
 cannot climb even a 20 degree slope - can always shuffle on to the next door
 beam. Falling costs ground and time; it never costs the run.
 
@@ -78,7 +111,11 @@ The level is built to what the physics actually allows, not to arithmetic:
 - `tests/level_probe.gd` — audits every beam in the real level. Every LOW beam
   must lock from a standstill; HIGH beams are expected to fail from the
   ground, by design.
-- `tests/debug_classify.gd` — calibration bench for the wrap thresholds.
+- `tests/debug_classify.gd` — a theta dump: what the wrap measure reads at the
+  anchor over 16 ticks for four laid turns, a quick look rather than a gate.
+
+`throw_probe.gd` and `level_probe.gd` search strokes and take minutes, not
+seconds; the other three finish in seconds.
 
 ## Saving: the run *is* the save
 
@@ -142,12 +179,26 @@ what it must contain and the recorder refuses to keep one whose census does not
 meet it. A gate that passes on nothing is the failure this corpus exists to
 answer.
 
-Play or watch a tape in the real game:
+**Record your own session, or watch one back:**
 
 ```
---path ... -- --record tapes/mine.tape --note "what this is"
+--path ... -- --record takes/mine.tape --note "what this is"
 --path ... -- --replay tapes/door.tape
 ```
+
+`--record` has always been a live recorder of a real session — the same
+recorder `tape_rec.gd` uses, pointed at your hands. Two things about it. Record
+into `takes/`, not `tapes/`: `tape_verify` replays everything in `tapes/` and
+requires each file to contain what it declares, so a bug recording there is a
+gate that fails on purpose. `takes/` is gitignored — a recorded human session is
+evidence, not source, and it is kept beside the code rather than in it. And
+while recording, **F** and **G** stamp the tick you were looking at: F for "the
+ring was green and it let go anyway", G for "that should have hooked and did
+not". Two keys because those are questions about different code. The stamps
+sit beside the input stream, never in it (a marked tape and an unmarked one
+feed the sim the same bytes; `mark_rt.gd` R2 requires it), and
+`tests/mark_look.gd -- takes/mine.tape` dumps the full lock state either side
+of every one, with the clause of the catch that refused.
 
 **A divergence is not automatically a bug.** A deliberate change to the sim
 diverges every tape, and that is correct. Re-record and commit the new tapes in
@@ -159,6 +210,27 @@ fixed substep count, but IEEE 754 does not oblige two architectures to agree on
 `sin`/`cos`/`sqrt`/`acos`, and x86 and ARM measurably do not. Nothing here
 assumes otherwise.
 
+### What determinism buys, and what it does not
+
+Bit-identical is not the same as predictable, and the tip is where the two part
+company. The tip is chaotic: two runs that differ by a few millimetres of cursor
+diverge smoothly and exponentially, with no cliff anywhere to find, and it
+cannot be fixed — damping the taper *raises* the divergence rate (26:1 → 1.6:1
+takes G3's amplification from 3.22× to 1.49× while the divergence rate goes
+from 1.77 to 3.83 /s), because a lighter tip that is also a slower one just has
+longer to wander. The floor was measured: a few millimetres of cursor moves the
+tip by about 0.9 m, and no input precision brings that under about 0.46 m.
+**Any task that asks the tip to be somewhere to better than a metre is a
+lottery**, and the game must not set one. It does not, and that is structural
+rather than lucky: nothing in the game reads the tip's position. `pos[NP-1]` is
+used four times in `main.gd` — once for tip speed, once inside a tangent
+correction in the wrap measure, twice to draw it. Everything that decides an
+outcome reads the wrap, which is measured where the rope touches the beam, not
+where it ends. (`mark_rt.gd` R3 shows the scale: a 10 micron cursor error on one
+tick changes the state hash eleven ticks later; a 1 micron one is absorbed by
+the reach clamp.) The probe that measured the divergence rate was not kept; its
+record is commit `6fdaa44`.
+
 ## THE LAB — a second level, and the anchor vocabulary
 
 ```
@@ -169,10 +241,13 @@ No flag is the traverse, and the traverse is **byte-identical**. `--level` is
 read before `_build_level` runs and only ever adds a second branch to it:
 `tests/hashrun.gd` still prints `2762505307938286422`, `tests/tape_verify.gd`
 still PASSes all 6 tapes, and `tests/lab_gate.gd` L1/L2 assert both from inside
-the lab build itself. The three new fields (`level_id`, `a_jam`, `a_name`) are
-in `SNAP_SKIP` for a reason worth knowing: `restore()` refuses a state whose key
-set has changed, so a var declared outside that list would refuse every
-committed tape and the player's save on the next boot.
+the lab build itself. The five lab fields (`level_id`, `a_jam`, `a_name`,
+`goal_y`, `jam_min_th`) are in `SNAP_SKIP` for a reason worth knowing:
+`restore()` refuses a state whose key set has changed, so a var declared outside
+that list would refuse every committed tape and the player's save on the next
+boot. `jam_min_th` is there too even though it is a tuning number, because a var
+declared anywhere else moves the snapshot layout, and re-recording six tapes for
+a constant that never changes inside a run is not a trade.
 
 The lab is a **bench, not a route** — one flat floor from x −12 to x 20, walled
 at both ends, four stations 6.5 m apart, nothing to fall off. The cost of a bad
@@ -185,7 +260,7 @@ a lab session and a traverse session cannot overwrite one another.
 | **BEAM** r 0.22 @ 2.2 m | the reference | identical radius, height and lead to the first school beam of the traverse — the throw that works here is the throw that works there |
 | **THIN BEAM** r 0.11 @ 2.2 m | same verb, less beam | the door-beam radius. Difficulty, not vocabulary |
 | **JAM** r 0.14 @ 2.2 m | the new word | the level supplies the self-crossing. Same height as the BEAM on purpose: the only thing that differs is what it takes to make it hold |
-| **JAM HIGH** r 0.14 @ 2.9 m | the same word, thrown hard | the top of the ~3 m envelope `throw_probe.gd` measured |
+| **JAM HIGH** r 0.14 @ 2.5 m | the same word, thrown harder | 2.5 m, not the 2.9 m this bench first shipped with. At 2.9 it was not difficult, it was luck: 3 winning strokes in 108, a 50 ms press window, and a lead basin of 64 cells in ten separate blocks, two of them 2.5 mm wide. No RNG is involved and every one of those repeats exactly — but a player cannot stand to 2.5 mm, so the same intention took sometimes and not others, which is the one thing this game has ruled out. Difficulty here lives in stroke shape, where it is learnable |
 
 Every station is captioned on screen under its anchor, and a jam wears a pale
 collar outside the instrumentation ring. **The ring itself is unchanged** — it
@@ -196,11 +271,22 @@ from a wrap would give the one instrument the player trusts two dialects.
 
 `_pinch()` is this file's own definition of *a wrap that can hold a body*, and a
 jam anchor answers **yes to it while the rope is touching**. That is the whole
-change: one branch, no new state, no new rule. The catch still needs a fresh
-grip inside `GRIP_WINDOW`, classification still runs through `PINCH_RUN`, the
-ring still gates on `a_locked == 1`, and **opening your hand still drops you in
-one frame**. What the player gains is not a new verb but a new promise: *a jam
-is a beam you do not have to earn the crossing on.*
+change: one branch, one tuning number, no new rule. The catch still needs a
+fresh grip inside `GRIP_WINDOW`, classification still runs through `PINCH_RUN`,
+the ring still gates on `a_locked == 1`, and **opening your hand still drops you
+in one frame**. What the player gains is not a new verb but a new promise: *a
+jam is a beam you do not have to earn the crossing on.*
+
+**The one number is a floor, and it had to be earned.** As first built the jam
+took on contact alone, and 28 of its 37 catches locked below 0.3 rad — under the
+angle at which the arc is drawn at all. It held the player with nothing on the
+screen, 76% of the time, in the same week the ring was fixed for lying; across
+the whole recorded corpus the traverse has never once held a player without
+drawing the ring (0 of 458 locked ticks). So `jam_min_th` = 1.0 rad, checked
+before contact. It costs 19% of the catch rate and buys back every dark hold —
+structurally, since 1.0 is above the 0.3 the arc starts at. It also puts a jam
+on the same dial as a beam at a different number: on a beam you wait for the arc
+to close, on a jam you press as it appears.
 
 ### What that is worth, measured
 
@@ -217,19 +303,34 @@ rope arrives on it.
 
 | station | cue: the arc reads | cue: the rope arrives |
 |---|---|---|
-| **BEAM** r 0.22 @ 2.2 m | 14 caught / 3 locked / **3 green** | 3 / 3 / 3 |
+| **BEAM** r 0.22 @ 2.2 m | 13 caught / 3 locked / **3 green** | 3 / 3 / 3 |
 | **THIN BEAM** r 0.11 @ 2.2 m | 20 / 20 / **20** | 11 / 11 / 11 |
-| **JAM** r 0.14 @ 2.2 m | 33 / 33 / **33** | 37 / 37 / **37** |
+| **JAM** r 0.14 @ 2.2 m | 32 / 32 / **32** | 29 / 29 / **29** |
 | *the same anchor, flag OFF* | 19 / 16 / 16 | 13 / 10 / 10 |
-| **JAM HIGH** r 0.14 @ 2.9 m | 0 / 0 / 0 | 3 / 3 / **3** |
-| *the same anchor, flag OFF* | 0 / 0 / 0 | **0 / 0 / 0** |
+| **JAM HIGH** r 0.14 @ 2.5 m | 7 / 7 / **7** | 7 / 7 / **7** |
+| *the same anchor, flag OFF* | 0 / 0 / 0 | 3 / **0** / 0 |
 
 Those two *flag OFF* rows are the control, and they are the whole argument: same
 radius, same position, same rig, same 108 strokes, one bit different. At 2.2 m
-the flag takes the green basin from 16 to 33 on the arc cue and from 10 to 37 on
-the arrival cue. At 2.9 m it is the difference between **3 and none at all** —
-the jam is reachable where the ordinary anchor is not, which is what "it takes
-from angles a wrap will not" means in numbers.
+the flag takes the green basin from 16 to 32 on the arc cue and from 10 to 29 on
+the arrival cue. At 2.5 m it is **7 against none**: the plain beam is touched by
+three strokes and locked by none of them — the jam is reachable where the
+ordinary anchor is not, which is what "it takes from angles a wrap will not"
+means in numbers. (The arrival cue read 37 before the arc floor went in; the
+floor cost it 8 strokes, and every one of them was a hold the player could not
+see.)
+
+### The verdict on the jam
+
+Measured against the beam next to it, a jam is **not a new verb; it is a
+discount on the old one.** The press window is the same quarter second, the aim
+basin is the same shape in the same place, and the only thing that moves is
+conversion — more of the strokes that were nearly right become right. That is
+worth having on a teaching bench, where the question is "was that stroke
+close?", and it is why the jam stays in the lab as a control against the plain
+beam beside it. It is not on the traverse and is not going there: a route built
+on discounts teaches the discount. (The measurement is recorded in commit
+`6fdaa44`; the rig behind it was not kept.)
 
 Then the winning stroke is caught for real, **the floor is removed** (rebuilt and
 assigned back — a packed array reached through a property is a copy, and
@@ -237,22 +338,25 @@ assigned back — a packed array reached through a property is a copy, and
 
 | station | hand SHUT | ring | hand OPEN | released | tension |
 |---|---|---|---|---|---|
-| BEAM | +0.010 m | green 180/180 | falls **43.5 m** | tick 0 | 58–126 N |
-| THIN BEAM | −0.197 m | green 180/180 | falls **40.4 m** | tick 0 | 62–106 N |
-| JAM | −0.149 m | green 180/180 | falls **45.3 m** | tick 0 | 65–108 N |
-| JAM HIGH | −0.173 m | green 180/180 | falls **45.6 m** | tick 0 | 65–110 N |
+| BEAM | +0.012 m | green 180/180 | falls **43.4 m** | tick 0 | 58–126 N |
+| THIN BEAM | −0.270 m | green 180/180 | falls **41.0 m** | tick 0 | 63–102 N |
+| JAM | −0.133 m | green 180/180 | falls **45.3 m** | tick 0 | 65–108 N |
+| JAM HIGH | −0.148 m | green 180/180 | falls **47.2 m** | tick 0 | 67–103 N |
 
-That is `sim_test`'s G7 asked once per anchor, and the jam passes it. The
-negative control the reading needs is in `lab_gate.gd` L7: the identical state
-with the catch dropped and the hand still shut falls 45.2 m, so the −0.149 m is
-the anchor and not the rig.
+Each row hangs on the winning stroke of the arrival cue, except THIN BEAM,
+whose row is the arc cue's. That is `sim_test`'s G7 asked once per anchor, and
+the jam passes it. The negative control the reading needs is in `lab_gate.gd`
+L7: the identical state with the catch dropped and the hand still shut falls
+45.3 m, the same distance to the decimetre, so the −0.133 m is the anchor and
+not the rig.
 
 **One consequence to know about: a jam never ambers.** Caught, locked and green
-are the same number in every jam row — 33/33/33, 37/37/37, 3/3/3 — because
-`_pinch` is true from the tick it engages, so `PINCH_RUN` is satisfied
-immediately and the wrap is classified LOCKED before it can be classified
-partial. The same anchor with the flag off does amber (19 caught, 16 locked —
-three partials), and so does the BEAM (14 caught, 3 locked — eleven). So a jam
+are the same number in every jam row — 32/32/32, 29/29/29, 7/7/7 — because
+`_pinch` is true from the tick it engages (the 1.0 rad floor is below the
+3.4 rad a catch needs, so it is already met by then), so `PINCH_RUN` is
+satisfied immediately and the wrap is classified LOCKED before it can be
+classified partial. The same anchor with the flag off does amber (19 caught, 16
+locked — three partials), and so does the BEAM (13 caught, 3 locked — ten). So a jam
 has no betrayal: it either does not take, or it holds. The ring still tells the
 truth at one; it just never has the amber to tell.
 
@@ -292,14 +396,17 @@ anchor shapes:
                                    #    the other's save while accepting its own
                                    # L5 the bench is walkable, the stations are in
                                    #    isolation, the camera never steps
-                                   # L6 the jam flag fires on contact, not at 1 m,
-                                   #    and not at all when it is off
+                                   # L6 the jam flag is the only thing that changed
+                                   #    about an ordinary anchor, and the 1.0 rad arc
+                                   #    floor is a real gate both ways: it pinches at
+                                   #    0.166 m and 1.10 rad, refuses at 0.90 rad,
+                                   #    refuses at 1.00 m, and refuses with the flag off
                                    # L7 G7 asked of the jam, from a THROWN catch
-                                   #    with the floor removed: hand shut -0.149 m
+                                   #    with the floor removed: hand shut -0.133 m
                                    #    over 3 s and green 180/180, hand open falls
                                    #    45.3 m on tick 0, and the control - the same
                                    #    state with the catch dropped and the hand
-                                   #    still shut - falls 45.2 m
+                                   #    still shut - falls the same 45.3 m
 ... -s res://tests/lab_throw.gd    # 108 searched strokes per station, thrown from
                                    # the lab floor; then the floor is REMOVED and
                                    # the body hangs 3 s with the hand shut and open
@@ -312,7 +419,7 @@ anchor shapes:
                                    # which is why cam_view was always run with one
 ```
 
-## Test gates
+## Test gates, and the instruments that are not gates
 
 ```
 "C:\Users\judeb\Downloads\Godot_v4.7.2-stable_win64.exe\Godot_v4.7.2-stable_win64_console.exe" --headless --path "C:\Users\judeb\Downloads\the-whip" -s res://tests/sim_test.gd
@@ -333,7 +440,54 @@ committed tapes rather than by hand-laying a rig: mid-air, mid-wrap,
 mid-betrayal, and coiled past the lock threshold. At each, an uninterrupted run,
 a run that was snapshotted, that snapshot restored from memory, and that
 snapshot written to a file and loaded into a sim that never played those ticks
-must all produce one hash.
+must all produce one hash. Run it alone: its scratch file is the fixed path
+`user://save_test.save`, so a second copy writing it mid-run produces a false
+"resumed from disk diverged".
+
+The whole set, each one a single command of the shape above, and every one
+must pass before a commit:
+
+| gate | must print | what it holds |
+|---|---|---|
+| `hashrun.gd` | `hash 2762505307938286422` | the golden session, the number three other tests carry |
+| `tape_verify.gd` | `PASS  6 tapes, 7679 ticks` | the game still does what it did yesterday |
+| `sim_test.gd` | `PASS` | G1–G7 above |
+| `save_test.gd` | `PASS` | snapshot and resume are bit-identical |
+| `bb_det.gd` | `PASS` | G2 asked of the body-against-beam path, which the corpus never exercises |
+| `cam_gate.gd` | `PASS  camera gate` | C1–C5, see The camera |
+| `aud_gate.gd` | `PASS` | A1–A6, see Sound |
+| `lab_gate.gd` | `PASS  lab gates L1-L7` | the bench exists without touching the traverse |
+| `mark_rt.gd` | `PASS  mark_rt` | the recorder and its marker do not lie — and no test writes the player's slot |
+| `mark_kind.gd` | `PASS  mark_kind` | F and G latch different kinds, and only under `--record` |
+
+Every test that puts `main.gd` in the tree sets its scratch `save_path`
+**after** `setup_sim()`, because `setup_sim()` re-derives the slot from the
+level ("the level owns its slot"), and a redirect made before it is silently
+undone. Two gates got that order wrong for a week and one of them wrote the
+player's `run.save` on every run; `mark_rt.gd` R7 now asserts the redirect
+survived.
+
+Then the instruments. None of these passes or fails; each reads a number off a
+recorded tape, and each exists because a number was once repeated to the
+player that had not been checked against his own play:
+
+| instrument | reads |
+|---|---|
+| `ring_census.gd -- takes/x.tape` | of the locks that carried the player, how many the ring ever drew green |
+| `ring_score.gd -- takes/x.tape tapes/...` | a candidate ring predicate against the one oracle that needs no judgement: did the wrap survive with the hand never opening |
+| `grip_census.gd -- takes/x.tape` | the grip byte: was the hand opened, or did the click slip |
+| `hang_census.gd -- takes/x.tape` | how long every lock lasted and how each one ended |
+| `mark_look.gd -- takes/x.tape` | the full lock state either side of every F/G stamp, and which clause of the catch refused |
+
+**A probe on a synthetic stroke is not evidence about play.** A bot rig reported
+that every hang is temporary — 40 of 41 lost the wrap inside 5 s. On the
+player's own recorded session (`takes/bug1.tape`, 22757 ticks) 22 of 25 locks
+ended because his hand opened, the longest at 15.17 s, and betrayal was about
+12% of locks. A bot throws and then holds a synthetic cursor policy; a player
+keeps working the hand. The bot was wrong and the player was right, and the
+number had already been said to him. Check against the recorded human session
+before repeating a number, and if there is no recorded session, record one
+first.
 
 ## The camera, and the mouse it must never touch
 
@@ -436,8 +590,10 @@ only then, to give that reading back.
                                   # manifest of what is inside it in metres
 ```
 
-The camera costs **2.8 us a tick** — 0.017% of a 16.7 ms frame, and 0.11% of
-what one simulation tick already spends.
+The camera costs a few microseconds a tick — **4.88 us** on the last
+`cam_ship.gd` run, law plus cursor mapping, and 3.79 on the one before; it is a
+timing number and it drifts — three hundredths of a percent of a 16.7 ms frame,
+and a tenth of a percent of what one simulation tick already spends.
 
 ## Sound is instrumentation, not polish
 
@@ -449,9 +605,12 @@ you a wrap *would* hold would be the same defect as a trajectory ghost.
 Everything is generated in code, as the greybox has no asset pipeline. Seeded
 RNG builds the waveforms at startup; **no RNG ever reaches the simulation.**
 
-Every curve is fitted to measured data, not guessed — `tests/aud_probe.gd`
-replays the tape corpus (7679 ticks) and reports the distribution of each
-driver. Two of them contradicted the obvious guess:
+Every curve is fitted to measured data, not guessed — the distributions came
+from a probe that replayed the tape corpus (7679 ticks) and reported each
+driver's spread. That probe was not kept; the numbers it produced are written
+into `main.gd` above the audio constants, which is where they are read from,
+and `aud_gate` A5 re-reads the load range on every run. Two of them
+contradicted the obvious guess:
 
 - **The bang samples the rising edge, not the peak.** The tip reaches 85.7 m/s
   (3.57x the crack threshold), but the crack fires on the *first* tick past the
@@ -491,20 +650,10 @@ A1 no audio node exists headlessly · **A2 the golden hash is unchanged with the
 audio pass forced ON** · A3 every audible event raised its ring on the same tick
 · A4 no verdict ran ahead of the sim · A5 the voices are actually driven ·
 A6 cost. A2 is the one that matters: it runs the audio code rather than
-reasoning about it, and the sim still hashes `2762505307938286422`.
-
-```
-... -s res://tests/aud_wave.gd     # level, DC, loop seams, sweep frequencies
-... -s res://tests/aud_probe.gd    # the distributions the curves are fitted to
-... -s res://tests/aud_trace.gd -- betray    # per-tick drivers for one tape
-... -s res://tests/aud_shot.gd -- --replay tapes/school.tape 359 366 out=DIR
-```
-
-`aud_shot` puts the real node in the tree to photograph the twins. It **must**
-be given `--replay`: `_ready` is deferred to the first frame, so a harness that
-clears `save_enabled` in `_initialize` has it turned back on a frame later by
-`_boot_session` — and then writes a run the player never played over the one
-slot. It refuses to step if `save_enabled` is not false.
+reasoning about it, and the sim still hashes `2762505307938286422`. The
+waveform, distribution, trace and photograph scripts that were run while the
+sound was built were scratch and were not committed; `aud_gate.gd` is the only
+audio test in the tree.
 
 ## Design contracts (do not "improve" these away)
 
@@ -513,7 +662,12 @@ slot. It refuses to step if `save_enabled` is not false.
   add a second slot, a checkpoint, a "load last" or a confirm-on-restart. The
   absence is the rule, and it is the reason no rule is needed.
 - No assists: no tip magnetism, no auto-taut, no input smoothing beyond the
-  constant arm spring, no trajectory prediction, no slow-mo.
+  constant arm spring, no trajectory prediction, no slow-mo. **One named
+  exception:** a JAM anchor (`a_jam`, lab only) supplies the self-crossing the
+  player would otherwise have to make. It is a property of a marked anchor, not
+  of the whip — it cannot follow you around, it wears its own collar, and it
+  obeys every other rule, grip included. An assist you can see and walk away
+  from is a different animal to one that rides along with you.
 - Rope never pushes. Arm forces are internal pairs (no waggle-flight).
 - Dissipation only via contact friction and taut-catch yanks.
 - Wrap angle is measured from live geometry every tick, never event-counted.
@@ -524,6 +678,14 @@ slot. It refuses to step if `save_enabled` is not false.
 - **The mouse never reads the camera.** Sensitivity is a constant, in metres
   per physical pixel, at every zoom and every window size. Both bans are
   enforced by `tests/cam_gate.gd` reading the source, not by these bullets.
-- The capstan pin (material point pinned at TH_FULL) is the documented
-  stand-in for rope self-pinch — the pressure-test showed a bare tapered
-  tail cannot hold a body by capstan friction alone.
+- The capstan pin — the rope's material point nailed at the anchor from the
+  tick a catch engages (θ ≥ `th_part`, or a self-crossing `_pinch` finds) — is
+  the documented stand-in for rope self-pinch: the pressure-test showed a bare
+  tapered tail cannot hold a body by capstan friction alone. LOCKED is decided
+  by `_pinch` over `PINCH_RUN` ticks, never by an angle.
+- **Green means exactly `a_locked == 1`.** The ring, the verdict sound and the
+  pulse share `_holds()`, and `_holds()` has no second clause. The last one —
+  three quarters of a turn of tail past the pin — was scored against recorded
+  play and hid 57.5% of the locks that really held while keeping greens that
+  survived less often than the ones it threw away. Do not add a clause to the
+  ring without `ring_score.gd` saying it scores better.

@@ -3,6 +3,7 @@ extends Node2D
 ## Custom fixed-tick verlet sim (no engine physics). One verb: shape the whip.
 ## Mouse = handle target (clamped to a reach circle around the body).
 ## HOLD Space (or LMB) = TAUT grip. Release = SLACK. R = restart.
+## F / G = mark this tick on the tape (only while --record; inert otherwise).
 ##
 ## Design contracts (do not "improve" these away):
 ##  - No RNG anywhere in the sim. Bit-identical replays on the same build.
@@ -19,6 +20,21 @@ extends Node2D
 ##    mouse waggling can never add net momentum (no helicopter flight).
 ##  - Wrap angle is MEASURED from live geometry every tick, never event-counted.
 ##  - Dissipation only via contact friction and the taut-catch yank. No air drag.
+##  - The save IS the run: one slot, overwritten every half second and on every
+##    exit, no rewind. No second slot, no checkpoint, no "load last", no
+##    confirm-on-restart - the absence is the rule (see save / resume below).
+##  - The camera never reads the whip: its whole input is the body's position,
+##    the body's velocity and an authored table. Not zoom, not framing, not a
+##    bias. A camera that reacts to the rope pumps with it; one that reacts to
+##    whether you COULD make the next gap is a feasibility oracle.
+##  - The mouse never reads the camera: sensitivity is a constant in metres per
+##    physical pixel at every zoom and every window size. Both bans are
+##    enforced by tests/cam_gate.gd reading the source, not by this list.
+##  - The capstan pin - the rope's material point nailed at the anchor from the
+##    tick a catch engages (theta >= th_part, or a self-crossing _pinch finds) -
+##    is the documented stand-in for rope self-pinch: a bare tapered tail cannot
+##    hold a body by capstan friction alone. LOCKED is decided by _pinch, never
+##    by an angle.
 
 # ---------------------------------------------------------------- constants --
 const PPM := 60.0                 # pixels per meter (render scale only)
@@ -69,19 +85,23 @@ var th_part := 3.4                    # rad: a catch engages. MUST sit above
                                       # up to 2.62 rad with the tight shell.
                                       # It used to be 3.0, i.e. BELOW a fold,
                                       # so gravity alone could wrap you.
-var th_full := 5.5                    # rad: LOCKED. Calibrated so a lock
-                                      # needs more than a full turn: measured
-                                      # settle is 2.5-3.9 at 1.0 turn (which
-                                      # OVERLAPS the fold range, so a single
-                                      # turn cannot be told from a crease) and
-                                      # 6.1-11.3 at 1.3 turns. The HUD promise
-                                      # of "a FULL turn" is now literally true.
-                                  # plateaus between 0.6 and 1.0 turns and then
-                                  # steps hard at ~1.05-1.15 turns - exactly
-                                  # where the chain crosses its own standing
-                                  # part. Putting the lock on that step means
-                                  # "locked" IS the self-pinch, the only thing
-                                  # that can physically hold a body on a beam.
+var th_full := 5.5                    # rad. READ NOWHERE. This was the angle a
+                                      # wrap had to reach to classify LOCKED
+                                      # before the verdict moved to _pinch (a
+                                      # self-crossing held PINCH_RUN ticks
+                                      # inside LOCK_WINDOW). The calibration it
+                                      # carried - settle 2.5-3.9 rad at 1.0
+                                      # turn, overlapping the fold range, so a
+                                      # single turn could not be told from a
+                                      # crease; 6.1-11.3 at 1.3 turns; a hard
+                                      # step at ~1.05-1.15 turns, exactly where
+                                      # the chain crosses its own standing
+                                      # part - is why the verdict became the
+                                      # crossing itself. It stays declared
+                                      # because it is a script var and so in
+                                      # the snapshot key set: deleting it would
+                                      # refuse every committed tape and the run
+                                      # on file. Setting it changes nothing.
 var jam_min_th := 1.0                 # rad: a JAM anchor supplies the crossing,
                                       # but not the SIGHT of it. The arc is only
                                       # drawn above 0.3 rad, so without a floor
@@ -103,7 +123,22 @@ var jam_min_th := 1.0                 # rad: a JAM anchor supplies the crossing,
 var th_rel := 1.8                     # rad: release
 
 const CRACK_SPEED := 24.0         # m/s tip speed -> crack event (sound only,
-                                  # NO energy is shed - that would be a governor)
+                                  # NO energy is shed - that would be a governor;
+                                  # crack_cooldown and crack_flash reach _events,
+                                  # _draw, _av_tick and the tape census, and
+                                  # nothing in the solver).
+                                  # AND IT IS NOT A STRIKE DETECTOR. Striking -
+                                  # the crack as a verb, aimed at a target - was
+                                  # measured and not built: this event fires a
+                                  # median 3.15-3.65 m from where the player
+                                  # aimed, and the tip's precision floor is
+                                  # ~0.9 m for a few mm of cursor and never under
+                                  # ~0.46 m at any input precision, because the
+                                  # tip is chaotic (smooth exponential, no cliff;
+                                  # see taper). One motion covers 87.5% of the
+                                  # strikeable envelope - darts, not golf - and
+                                  # any target under ~1 m is a lottery. Record:
+                                  # commit 6fdaa44; the probes were not kept.
 
 # ------------------------------------------------------------------- state --
 var pos := PackedVector2Array()
@@ -131,26 +166,40 @@ var a_half := PackedInt32Array()      # last half-wrap count (for tick sfx)
 # demo stand-in for real self-pinch (a bare tapered tail cannot hold a body by
 # capstan friction alone - the pressure-test's key finding). Honest scope of
 # the stand-in, as implemented:
-#  - the pin engages on ANY catch (measured theta >= th_part), so a partial
-#    wrap really does catch you - that is the briefed "it catches, then
-#    betrays" and it is what makes a near-miss readable rather than nothing;
+#  - the pin engages on ANY catch (measured theta >= th_part, or a
+#    self-crossing that _pinch finds, inside GRIP_WINDOW of the hand
+#    closing), so a partial wrap really does catch you - that is the
+#    briefed "it catches, then betrays" and it is what makes a near-miss
+#    readable rather than nothing;
 #  - a partial wrap pays MATERIAL through the pin, one segment per
 #    PAYOUT_TICKS, while loaded: the betrayal is a visible, audible ratchet
 #    that ends with the whip sliding off its own tail;
-#  - a wrap classified locked (>= th_full) freezes payout - it is committed;
-#  - any wrap releases when measured theta falls below th_rel, so an unwrap
-#    wave that lifts segments off contact still frees it, loaded or not.
+#  - a wrap classified locked (_pinch true for PINCH_RUN consecutive ticks
+#    inside LOCK_WINDOW - the self-crossing, never an angle) freezes payout -
+#    it is committed;
+#  - any wrap releases when measured theta falls below th_rel with no pinch
+#    left, so an unwrap wave that lifts segments off contact still frees it,
+#    loaded or not - and the hand opening drops it that same tick, whatever
+#    the wrap was.
 var a_pinidx := PackedInt32Array()
 var a_pinpt := PackedVector2Array()
 # wrap classification: measured contact-theta creeps upward as a loaded wrap
-# beds in against the anchor, so partial-vs-locked is decided ONCE from
-# settled geometry shortly after the catch and then FROZEN. It upgrades only
-# on a genuine added turn (a large theta jump), never on bedding-in creep.
+# beds in against the anchor, so partial-vs-locked is decided ONCE - from the
+# WEAKEST theta seen and from whether the chain crosses itself inside
+# LOCK_WINDOW - and then FROZEN. There is no upgrade path at all (see
+# _update_locks: the climb after a catch was the pin's doing, not the
+# player's). The only later change is downward: a locked wrap that unwinds
+# under th_part with no pinch left becomes partial and pays out.
 var a_locked := PackedInt32Array()    # -1 pending, 0 partial, 1 locked
 var a_armed := PackedInt32Array()     # 0 = must fully unwind before re-catching
-var a_pin0 := PackedInt32Array()      # pin index at engagement (has it slipped?)
+var a_pin0 := PackedInt32Array()      # pin index at engagement. Read by no
+                                      # code here; tests/mark_look.gd dumps it
+                                      # (has the pin slipped?), and it is in
+                                      # the snapshot key set
 var a_pend := PackedInt32Array()      # ticks since engagement (for classify)
-var a_ength := PackedFloat32Array()   # theta at classification time
+var a_ength := PackedFloat32Array()   # theta at classification time. Read by
+                                      # no code here; mark_look dumps it, and
+                                      # it is in the snapshot key set
 var a_minth := PackedFloat32Array()   # weakest theta seen during the settle
 # The self-pinch is THE WRAP YOU MADE. These record which stretch of chain was
 # actually in the wrap at the moment it engaged, as offsets from the pin, so
@@ -163,12 +212,6 @@ var a_prun := PackedInt32Array()      # consecutive ticks this wrap has pinched
 var a_clear := PackedInt32Array()     # consecutive ticks the rope has been off
 var a_wlo := PackedInt32Array()
 var a_whi := PackedInt32Array()
-                                      # Raised from 8 when the pin re-seat
-                                      # landed: re-seating removes the wasted
-                                      # teleport, which shortened the visible
-                                      # betrayal from 56 to 39 ticks. This
-                                      # restores it - the betrayal has to be
-                                      # long enough to read as losing.
 # A capstan holds only if there is tension on BOTH sides of the wrap. Your hand
 # supplies the standing-side tension - that is what gripping IS. Let go and the
 # rope simply runs through your hand, the wrap unwinds, and you fall. This is
@@ -177,7 +220,13 @@ var a_whi := PackedInt32Array()
 # inextensible in both modes, a wrap holds whether or not you grip, and the
 # grip button is decorative.
 const PAYOUT_TICKS := 15              # ticks between one segment paying
-                                      # through a slipping partial wrap
+                                      # through a slipping partial wrap.
+                                      # Raised from 8 when the pin re-seat
+                                      # landed: re-seating removed the wasted
+                                      # teleport, which shortened the visible
+                                      # betrayal from 56 to 39 ticks. This
+                                      # restores it - the betrayal has to be
+                                      # long enough to read as losing.
 # THE JAM ANCHOR. 1 = this anchor supplies the self-crossing itself; see
 # _pinch. LEVEL data, rebuilt by _build_level on every boot, so it is in
 # SNAP_SKIP and deliberately NOT in level_fingerprint: adding a field to that
@@ -202,13 +251,24 @@ const TAIL_MIN := 1                   # tail segments that must remain past the
                                       # while close catches got a full second
                                       # of legible ratcheting. Now the tip
                                       # betrays at the same readable rate.
-const CLASSIFY_TICKS := 6             # settle time before partial/locked call
-const UPGRADE_JUMP := 1.2             # rad above classified theta = real turn
-# a locked wrap degrades back to "partial" only when the measured wrap falls
-# below the CATCH threshold. It cannot be th_full-epsilon: a wrap tightening
-# under load straightens its wrapped segments out of the contact band, so
-# measured theta legitimately decays ~1.5 rad while the wrap is physically
-# unchanged. Demoting inside that band would betray honest full wraps.
+const CLASSIFY_TICKS := 6             # READ NOWHERE. The old single-sample
+                                      # settle time. The verdict now watches a
+                                      # LOCK_WINDOW of 30 ticks for PINCH_RUN
+                                      # consecutive pinches (_update_locks: one
+                                      # sample at tick 6 misjudged 43% of
+                                      # partials). A const, not a var, so it is
+                                      # outside the snapshot key set; kept so
+                                      # the number stays findable.
+const UPGRADE_JUMP := 1.2             # READ NOWHERE. The old partial->locked
+                                      # upgrade on a theta jump. There is no
+                                      # upgrade path any more: 79% of
+                                      # accidental locks were the pin's climb.
+# A locked wrap is DEMOTED to partial only when the measured wrap falls below
+# the CATCH threshold th_part with no self-crossing left (_update_locks). It
+# cannot be a band just under the lock reading: a wrap tightening under load
+# straightens its wrapped segments out of the contact band, so measured theta
+# legitimately decays ~1.5 rad while the wrap is physically unchanged, and
+# demoting inside that band would betray honest full wraps.
 
 # terrain segments. t_n is each segment's OUTWARD (air-side) normal. Terrain is
 # a polyline, not a set of half-spaces, so without a stored outward direction
@@ -286,29 +346,29 @@ var taper := 26.0                     # handle:tip mass ratio (see _reset).
                                       # Taper sets FEEL, not difficulty: it
                                       # trades heft for snap (tests/taper_sweep
                                       # measures 3.0x amplification at 22:1,
-                                      # 4.4x at 35:1) but barely moves the lock
+                                      # 4.4x at 35:1; sim_test G3 reads 3.2x at
+                                      # this 26:1) but barely moves the lock
                                       # rate (tests/lock_rate.gd). 26:1 keeps
                                       # the whip feeling weighted - a noodle is
                                       # not satisfying to throw - with a little
                                       # more life than the original 22:1.
+                                      # DO NOT LOWER IT TO TAME THE TIP. The
+                                      # tip is chaotic - a smooth exponential
+                                      # divergence, no cliff - and taper is not
+                                      # the cure but the opposite: 26:1 -> 1.6:1
+                                      # drops G3's amplification 3.22x -> 1.49x
+                                      # while the divergence rate RISES 1.77 ->
+                                      # 3.83 /s. A limper whip is a MORE chaotic
+                                      # whip. And it never reaches the mechanic:
+                                      # nothing in the game reads the tip's
+                                      # position (pos[NP-1] is read for tip
+                                      # speed, one tangent correction and two
+                                      # draw calls, and that is all). Record:
+                                      # commit 6fdaa44; the probe was not kept.
 var ground_mu := 0.30                 # chain/body friction against terrain
-#  0 - off: winding a beam is free, so stirring the hand spools the whole whip
-#      onto it at no cost. This is what "it just keeps wrapping" feels like.
-#  1 - winding CONSUMES tether: every extra turn eats the rope it wound on, so
-#      coiling hauls you toward the beam. Self-limiting, and honest - that is
-#      what winding rope onto a post does. On its own it is also a WINCH: stir
-#      to wind, get pulled up, for free. The design bans a reel as a hidden
-#      second verb, which is what mode 3 fixes.
-#  3 - mode 1 PLUS an over-wound coil pays back out under load: excess turns
-#      are unstable when you hang on them, so a coil you wound to climb sheds
-#      itself and drops you. Winding up costs rope; hanging on it gives it back.
-                                      # way to the beam - it is a drift, not a
-                                      # docking mechanism.
-                                      # tether. This has to read as being
-                                      # slowly drawn in; anything brisk both
-                                      # yanks the body into a thrash and makes
-                                      # landing a good whip pointless, because
-                                      # stirring would beat throwing.
+# The coil modes (winding consuming tether, an over-wound coil shedding) were
+# measured to do nothing and deleted in 7916cf1; a hidden reel was the second
+# verb the design bans.
 const PINCH_RAD := 0.10               # m: how close to the beam a self-crossing
                                       # has to be to count as a pinch
 const PINCH_TURN := 0.75              # turns of chain that must lie between the
@@ -377,9 +437,12 @@ var sfx_let: AudioStreamPlayer        # you opened your hand / it unwound clean
 #   slid off        <-> a red burst                               (_draw, anchor)
 #   let go          <-> a pale burst                              (_draw, anchor)
 #
-# EVERY CURVE IS FITTED TO MEASURED DATA, not to a guess: tests/aud_probe.gd
-# replays the committed tape corpus (7679 ticks) and reports the distribution
-# of each driver. What it found, and what the ranges below are built on:
+# EVERY CURVE IS FITTED TO MEASURED DATA, not to a guess. The probe that took
+# these numbers (aud_probe: a corpus replay reporting the distribution of each
+# driver over the 7679 tape ticks) was NEVER COMMITTED - the numbers stand as
+# the record, and tests/aud_gate.gd A5 re-reads the load range on every run
+# (45.8-232.1 N today; the 45.9 below is the same floor at the other rounding).
+# What it found, and what the ranges below are built on:
 #   tip speed       p50   8.6   p90  29.2   p99  53.2   max  85.7  m/s
 #   wrap tension    min  45.9   p50  67.7   p90 157.1   max 232.1  N (wrapped)
 #   ground scrape   p50  18.5   p90  54.9   p99 108.9   max 276.8  (sum m/s)
@@ -598,7 +661,7 @@ func _build_traverse() -> void:
 	# throw from, at roughly 1.5-2.5 m of lead. Every mandatory anchor here
 	# sits inside that envelope. Gaps are V-floored so a fall costs ground
 	# and time but never the run: the lash gait crawls out either side
-	# (measured ~0.37 m/s in tests/ground_probe.gd).
+	# (measured ~0.42 m/s: tests/ground_probe.gd, 4.22 m in 10 s).
 	# LEVEL CONTRACT - measured, not assumed.
 	#
 	# THE GOVERNING FACT: a beam cannot be both catchable from a standstill
@@ -616,7 +679,7 @@ func _build_traverse() -> void:
 	# you, so the rope comes up shorter than you stand.
 	#
 	# Every drop faces DOWNHILL along the route, so the lash gait (which
-	# crawls flat ground at ~0.44 m/s and cannot climb even a 20 degree
+	# crawls flat ground at ~0.42 m/s and cannot climb even a 20 degree
 	# slope) can always shuffle forward to the next door beam. Falling costs
 	# ground and time; it never costs the run.
 	var pts: Array[Vector2] = [
@@ -806,9 +869,10 @@ func _build_lab() -> void:
 	# time because you can only reach one at a time.
 	#
 	# Heights are 2.2 m, which is what the school beams are and what school.tape
-	# catches from a standstill, except the last which is 2.9 m - just inside
-	# the ~3 m ceiling throw_probe measured, and the only station here that is
-	# meant to cost you attempts.
+	# catches from a standstill, except the last, which is 2.5 m: it shipped at
+	# 2.9, just inside the ~3 m ceiling throw_probe measured, and was brought
+	# down for the reason written on the station itself. It is still the only
+	# station here that is meant to cost you attempts.
 	#
 	#          x     y     r    jam  name
 	var stations := [
@@ -1077,15 +1141,19 @@ func cam_reinit() -> void:
 # camera owns is in this path, so the mapping cannot drift with anything the
 # camera does. Measured through the real canvas transform (tests/cam_gate.gd
 # C2): 1.66667 m per 100 physical px of mouse at every zoom from 0.70 to 1.25
-# and at every window size, identical to the last bit. Through the camera the
-# same sweep runs 1.333-2.381 m - a 79% swing in the sensitivity of a
-# position-mapped control, and the reach circle's 69 px rim shrinking to 48.
+# and at every window size from 1280 to 2400 wide, identical to the last bit.
+# Through the camera the same sweep runs 1.111-2.976 m - a 168% swing in the
+# sensitivity of a position-mapped control - with the reach rim, the whole
+# control surface, running from 77 px of desk to 207. It is 138 px at every
+# one of them here. (Zoom alone, at 1600 wide, is the 1.333-2.381 m / 79%
+# half of that.)
 #
 # CAMERA POSITION, not just zoom, is the load-bearing half. The framing above
 # leads by up to 3.2 m and lets the body ride from 21% to 73% of frame height;
-# a camera-mapped cursor would sweep a STATIONARY HAND 4.5 m across and 7.8 m
-# down, against a reach radius of 1.15 m. That has never shown up before only
-# because the shipped camera never left the body.
+# a camera-mapped cursor would sweep a STATIONARY HAND 4.11 m across and
+# 7.84 m down (tests/cam_ship.gd D) - 3.6x and 6.8x the entire 1.15 m reach.
+# That has never shown up before only because the shipped camera never left
+# the body.
 const PPM_INPUT := 60.0               # px per metre of MOUSE TRAVEL. A
                                       # constant, and deliberately not PPM:
                                       # they are equal today by choice, not by
@@ -1093,10 +1161,13 @@ const PPM_INPUT := 60.0               # px per metre of MOUSE TRAVEL. A
                                       # to move without touching the control.
 # The anchor is the screen point at which the handle target sits on the body. It
 # is 1.4 m below centre because that is where the shipped camera put the body
-# (cam = body + (0,-1.4), measured p50 0.00 m, p99 0.08 m of departure over the
-# whole corpus), so this mapping REPRODUCES the control every hour of practice
-# was done against - and then keeps reproducing it once the camera starts
-# leading and stepping, which is exactly when the old one would have drifted.
+# (cam = body + (0,-1.4): over the 9045 ticks of corpus plus leaps in
+# tests/cam_ship.gd D the two mappings differ by p50 0.006 m, p90 0.058 m,
+# p99 0.132 m - the 1.334 m max is R's teleport on reset.tape, where the old
+# camera was left 116% of the reach behind the body), so this mapping
+# REPRODUCES the control every hour of practice was done against - and then
+# keeps reproducing it once the camera starts leading and stepping, which is
+# exactly when the old one would have drifted.
 const CURSOR_ANCHOR := Vector2(0.0, 1.4 * 60.0)   # design px, from view centre
 
 static func cursor_of(body: Vector2, mouse_px: Vector2, anchor_px: Vector2,
@@ -1109,8 +1180,10 @@ func cursor_anchor_px() -> Vector2:
 func cursor_m_per_px() -> float:
 	# get_mouse_position() speaks the project's 1600x900 DESIGN pixels: the
 	# engine has already divided the window's stretch back out of the event
-	# (measured - tests/cam_units.gd: the same physical pointer reads 949 px in
-	# a 1600-wide window and 1186.25 px in a 1280-wide one, exactly 1/0.8).
+	# (measured in a probe that was not kept: the same physical pointer reads
+	# 949 px in a 1600-wide window and 1186.25 px in a 1280-wide one, exactly
+	# 1/0.8; tests/cam_gate.gd C2 asserts the consequence at 1280, 1600 and
+	# 2400 wide on every run).
 	# Multiplying the stretch back in pins the control to PHYSICAL pixels, so a
 	# smaller window is a smaller picture of the same world rather than a 25%
 	# sensitivity change - the same bug as zoom, through a different door.
@@ -1529,11 +1602,13 @@ func _swept_body() -> void:
 	# does for the chain, and it runs in the same sweeps-before-discrete phase.
 	# The discrete test below only sees a body that ENDS a substep overlapping,
 	# so what it misses is set by how long a chord the path cuts, not by the
-	# beam's size. Measured (tests/bb.gd -- tunnel, phase-scanned, per substep,
-	# 0.10 m beam), the discrete pass ALONE first misses a contact of depth
+	# beam's size. Measured (bb -- tunnel: a scratch probe, phase-scanned, per
+	# substep, NOT COMMITTED; tests/bb_det.gd is the determinism gate for this
+	# code, not that probe - 0.10 m beam), the discrete pass ALONE first misses
+	# a contact of depth
 	#     0.3 mm at  30 m/s   2 mm at  81 m/s   5 mm at 128 m/s
 	#      20 mm at 255 m/s  50 mm at 391 m/s   the whole beam at 762 m/s
-	# and the fastest body the game produces is 31.7 m/s (tests/bb.gd -- speed:
+	# and the fastest body the game produces is 31.7 m/s (bb -- speed:
 	# a hard crack while hanging, sustained per tick, not a one-substep spike).
 	# So the discrete pass alone would already be right to within a third of a
 	# millimetre and could not be walked through short of 24x the game's top
@@ -1628,7 +1703,7 @@ func _collide_body() -> void:
 	# THE BEAMS ARE SOLID. This loop used to be missing entirely: the body was
 	# tested against terrain and nothing else, so it passed clean through the
 	# very beam it was hanging from - measured at up to 0.50 m of overlap, the
-	# whole beam swallowed, on every radius in the level (tests/bb.gd -- ghost).
+	# whole beam swallowed, on every radius in the level (bb -- ghost).
 	# Anchors are convex circles, so unlike the terrain polyline there is no
 	# "which side is solid" question and no rescue branch is needed: outward is
 	# always radially away from the centre.
@@ -1638,7 +1713,7 @@ func _collide_body() -> void:
 	# anywhere inside atan(mu) of the apex, which at ground_mu is 17 degrees -
 	# a 0.11 m half-width on the thinnest beam, and wider than that in practice
 	# because a body that ARRIVES with momentum beds in. Measured both ways
-	# (tests/bb.gd -- rest, this build against the same patch with the
+	# (bb -- rest, this build against the same patch with the
 	# tangential Coulomb cap switched on at ground_mu):
 	#        dropped on it        a player actively trying to perch
 	#   0.30   17-18 of 20 stay,   14 of 15 with the hand held overhead,
@@ -1656,7 +1731,7 @@ func _collide_body() -> void:
 	# the rope is how you hold a beam. That is the whole game.
 	#
 	# So the beam takes the APPROACH component of the body's velocity and
-	# nothing else - the least a solid can take. Measured (tests/bb.gd
+	# nothing else - the least a solid can take. Measured (bb
 	# -- swing) at 8 m/s past a beam: exactly 0.000% and 0.0 degrees at any
 	# clearance at or above zero - a beam you miss is bit-for-bit invisible -
 	# 10-13% if you clip it by 0.05 m, 40-52% if you bury 0.20 m into it. Flown
@@ -1705,13 +1780,19 @@ func _measure_wraps() -> void:
 	#
 	# It replaces a COUNT of chain segments with both endpoints inside a 4 mm
 	# shell, times a constant. Every number below is measured against ground
-	# truth over 576 thrown wraps - tests/jb2/feat_dump.gd collects it,
-	# tests/jb2/score.py scores it, tests/jb2/closed_loop.gd audits the whole
-	# loop with the hand actually closing.
+	# truth over 576 thrown wraps (commit 40731bf, "The taut wrap angle"). The
+	# rig that took them - feat_dump collected the features, score.py scored
+	# them, closed_loop audited the whole loop with the hand actually closing,
+	# refusal_stress2 threw the drapes - was scratch from the catch
+	# investigation, depended on an ignored tests/orc_lib.gd, and was not kept;
+	# the commit message carries the scores of the three rejected fixes
+	# (contact hysteresis FN 99 / FP 1440, widened shell FN 33 / FP 2112, span
+	# measure FN 234 / FP 690, against the shipped FN 327 / FP 635).
 	#
 	#  - THE COUNT CHATTERS. It moves 0.47 rad in an average tick while the
 	#    rope is wrapped, and up to 5.25 rad in one tick. On a wrap rigged so
-	#    it CANNOT change (tests/orc_valid.gd) it ranges over 1.88 to 7.47 rad
+	#    it CANNOT change (orc_valid - scratch under the ignored tests/orc_*
+	#    pattern, not kept) it ranges over 1.88 to 7.47 rad
 	#    while the geometry is frozen; this reads 0.000 rad of movement on
 	#    that same wrap, and 0.18 rad in an average thrown tick.
 	#  - THE COUNT GOES BLIND. It is silent on 327 of 3606 wrapped ticks, in
@@ -1724,7 +1805,7 @@ func _measure_wraps() -> void:
 	#    rope is not wrapped - 64% of all its firings on a 0.24 m beam - it
 	#    lets 27 throws that never wrap at all be caught anyway, and it
 	#    catches a LIMP DRAPE on every beam radius in the level
-	#    (tests/jb2/refusal_stress2.gd) at a true wrap of 0.12-0.78 rad.
+	#    (refusal_stress2, the same rig) at a true wrap of 0.12-0.78 rad.
 	#
 	# What makes this trustworthy where a count is not: it is continuous in
 	# every vertex position, so it cannot chatter, and it needs no shell.
@@ -1808,8 +1889,11 @@ func _pinch(k: int) -> bool:
 	# catch still needs a fresh grip inside GRIP_WINDOW, a_lockidx still has to
 	# clear pin_min_idx, PINCH_RUN still has to run, _holds() still gates the
 	# ring on a_locked == 1, and _update_locks' hand-open branch still drops
-	# a_freelen, a_pinidx and a_locked in one frame. Measured on the bench
-	# (tests/lab_gate.gd L6): hand shut, the body hangs; hand open, it falls.
+	# a_freelen, a_pinidx and a_locked in one frame. Measured on the bench from
+	# a THROWN catch with the floor removed (tests/lab_gate.gd L7): hand shut,
+	# the body hangs (-0.133 m over 3 s, green 180/180); hand open, it falls
+	# 45.3 m on tick 0. L6 is the flag itself: it fires on contact above the
+	# jam_min_th floor, not at 1 m, and not at all when it is off.
 	#
 	# WHAT THE PLAYER GAINS is not a new verb but a new promise - a jam anchor
 	# is a beam you do not have to earn the crossing on, so it takes from
@@ -1973,6 +2057,13 @@ func _update_locks() -> void:
 				# to 32 ticks, paid out anyway. Only a real crossing can flip
 				# the verdict, so this cannot reopen the theta-creep defect
 				# that the no-upgrade rule guards against.
+				# THE COUNTER RACE IS REAL AND DECIDES NOTHING. PINCH_RUN = 2
+				# consecutive pinches against a LOCK_WINDOW of 30: a crossing
+				# that flickers, or arrives on tick 29, is in principle a
+				# partial by one tick. Measured on the player's own recorded
+				# session (takes/bug1.tape, 22757 ticks, 25 locks): 0 outcomes
+				# decided by it. Checked; do not re-open it on a synthetic
+				# stroke.
 				a_pend[k] += 1
 				a_minth[k] = minf(a_minth[k], th)
 				a_prun[k] = a_prun[k] + 1 if _pinch(k) else 0
@@ -1992,7 +2083,13 @@ func _update_locks() -> void:
 			# wrap you get.
 			if a_locked[k] == 1:
 				if th < th_part and not _pinch(k):
-					a_locked[k] = 0   # unwound below a full turn: it betrays now
+					# Unwound below a full turn with no crossing left: it betrays
+					# now. Measured on the player's recorded session
+					# (tests/hang_census.gd on takes/bug1.tape): of 25 locks, 22
+					# ended by the hand opening, 2 here, 1 by the tail running out
+					# - ~12% betray - and the longest hold was 15.17 s. "Every
+					# hang is temporary" was a bot's synthetic stroke, not play.
+					a_locked[k] = 0
 					a_ength[k] = th
 				else:
 					a_paytick[k] = 0  # locked: committed, no payout
@@ -2492,17 +2589,22 @@ func _av_tick() -> void:
 			# a_locked is still -1 and the pinch window is still open.
 			#
 			# THE ABSENCE OF A SOUND IS NOT A READING. Firing only on 'it holds'
-			# would have left every other verdict announced by silence, and
-			# silence is not something a player can time. Measured over the
-			# corpus, 3 catches produced exactly 1 green - so two thirds of all
-			# verdicts would have been delivered by nothing happening. Both
-			# outcomes get a voice, and both get a pulse.
+			# would leave every other verdict announced by silence, and silence
+			# is not something a player can time. (When this was written the
+			# ring's tail clause turned 2 of the corpus's 3 locks amber, so two
+			# thirds of its verdicts would have been delivered by nothing
+			# happening. That clause is gone - see _holds - and tests/aud_gate.gd
+			# now reads catch 3, hold 3 over the corpus; the amber verdict that
+			# remains in it is betray.tape's, a lock that unwound under th_part,
+			# went amber, paid out twice and slid off.) Both outcomes get a
+			# voice, and both get a pulse.
 			#
 			# WHICH one plays is decided by _holds, the ARC's own predicate, so
 			# the pulse, the ring and the sound cannot end up saying three
-			# different things. That is load-bearing here: 2 of the corpus's 3
-			# locks classify a_locked == 1 and then fail the tail test, and the
-			# screen has always drawn those amber. Now they sound amber too.
+			# different things. Since 1aa17d8 that predicate is exactly
+			# a_locked == 1, so a green that goes amber is now only the
+			# demotion in _update_locks - and it sounds amber the tick the
+			# ring does.
 			var res := a_locked[k] != -1 and av_lk[k] == -1
 			if res or hold != av_hold[k]:
 				if hold == 1:
@@ -2824,11 +2926,13 @@ const AUTOSAVE_TICKS := 30            # half a second: the most a crash can cost
 
 # WHAT IS THE SIMULATION is answered by the object, not by a list kept by hand.
 # Every script variable is state unless it is named here or is a node. A
-# hand-kept list goes stale in silence, which is not hypothetical: the planner's
-# own STATE_KEYS in tests/bot_leap.gd still names a_lastth and a_shed - deleted
-# fields, both - and has never heard of a_clear, which drives the re-arm, so
-# every planning candidate it restores carries one field from another timeline
-# and nothing anywhere says so. Declare a var and it is in the snapshot.
+# hand-kept list goes stale in silence, which is not hypothetical: the planner
+# in tests/bot_leap.gd used to copy state through its own STATE_KEYS, which
+# still named a_lastth and a_shed after both were deleted with the coil modes
+# and had never heard of a_clear, which drives the re-arm - so every planning
+# candidate it restored carried one field from another timeline and nothing
+# anywhere said so. It now calls snapshot() and restore(). Declare a var and it
+# is in the snapshot.
 const SNAP_SKIP := ["external_drive", "save_enabled", "save_path", "save_due",
 	# WHICH LEVEL IS LOADED IS NOT SIMULATION STATE, it is what the simulation
 	# was built FROM. _build_level has already run by the time restore() is

@@ -1,6 +1,7 @@
 extends SceneTree
 ## WAS THE HAND OPENED, OR DID IT SLIP? On a trackpad a physical click is easy
-## to lose without noticing, and main.gd:1584 drops the wrap on ONE false tick
+## to lose without noticing, and main.gd's hand-open branch in _update_locks
+## (the `if not taut:` under an engaged wrap) drops the wrap on ONE false tick
 ## with no debounce. This reads the recorded grip byte - the exact bit the sim
 ## consumed - and asks how the player's releases are distributed.
 ##

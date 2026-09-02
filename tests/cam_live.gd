@@ -30,12 +30,16 @@ func _process(_d: float) -> bool:
 		# start part B at the spawn, not from this probe's own last scratch
 		DirAccess.remove_absolute(ProjectSettings.globalize_path(
 			"user://cam_live_scratch.save"))
-		# save_path is redirected BEFORE the node enters the tree: _ready defers
-		# to _boot_session, which turns saving on for an ordinary session, and
-		# this must never be the thing that writes the player's one slot.
+		# setup_sim() FIRST: it re-derives save_path from level_id (main.gd,
+		# "THE LEVEL OWNS ITS SLOT"), so a redirect made before it is silently
+		# undone. Then the redirect, then add_child: _ready skips setup_sim
+		# (pos is built) and runs _boot_session synchronously against the
+		# scratch path, and _boot_session turns saving on for an ordinary
+		# session - which this deliberately IS, on the scratch path, and must
+		# never be on the player's one slot.
 		m = MAIN.new()
-		m.save_path = "user://cam_live_scratch.save"
 		m.setup_sim()
+		m.save_path = "user://cam_live_scratch.save"
 		root.add_child(m)
 		print("")
 		print("=== B. THE LIVE PATH: main.gd's own _physics_process ===")

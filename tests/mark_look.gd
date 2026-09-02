@@ -318,7 +318,8 @@ func _row(m: Node2D, i: int, prev: Dictionary) -> Dictionary:
 			"falls": int(m.falls)},
 	}
 
-# THE CATCH CONDITION, main.gd:1567, clause by clause. Returns "" if every
+# THE CATCH CONDITION - the one `if taut and ...` line in _update_locks'
+# not-engaged branch - clause by clause. Returns "" if every
 # clause held - which means a catch fired on this tick - otherwise one letter
 # per clause that refused, in the sim's own order.
 #

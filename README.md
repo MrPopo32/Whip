@@ -18,6 +18,13 @@ There is a second level, a flat teaching bench - see **THE LAB** below:
 --path ... -- --level lab
 ```
 
+And a third, where the rock is the thing the whip interacts with - see **THE
+CRAG** below:
+
+```
+--path ... -- --level crag
+```
+
 ## Controls
 
 | Input | Action |
@@ -419,6 +426,206 @@ anchor shapes:
                                    # which is why cam_view was always run with one
 ```
 
+## THE CRAG — a third level, where the rock shapes every throw
+
+```
+"C:\Users\judeb\Downloads\Godot_v4.7.2-stable_win64.exe\Godot_v4.7.2-stable_win64_console.exe" --path "C:\Users\judeb\Downloads\the-whip" -- --level crag
+```
+
+The player's brief, in his words: *what I liked about Getting Over It is that
+the hammer is fully interactive with the environment so it simulates endless
+gameplay, whilst the whip is limited to the beams. I want to expand that.* The
+rope has always collided with all of the terrain (`t_a/t_b/t_n`, swept,
+outward normals); the traverse simply never put any terrain where the rope
+goes, because its beams float in open air over flat floors. The crag puts rock
+around and between the anchors, so that each one is a different throw, a
+different hang and a different swing.
+
+### Why a corner cannot hold, and what rock can do instead
+
+A rope holds only by a **self-pinch** around something it can go fully round.
+The catch engages at `th_part` = 3.4 rad of measured wrap and lets go under
+`th_rel` = 1.8, and a rope draped over a terrain corner touches at most
+(π − interior angle) of it — **1.57 rad on a 90° lip**, less on anything
+blunter. A corner therefore cannot be an anchor, ever, at any radius, and this
+level does not try to make one: every convex corner the rope can reach is
+**filleted** (`_fillet`), so it is a curve the rope slides round rather than a
+point it snags on, and no fillet is in `a_pos`. `crag_gate` C5 proves both
+halves — a rope laid over a filleted lip slides clean off with the hand open,
+and a rope wound one and a half turns round a fillet, with the hand closing
+every ten ticks, engages nothing and measures 0.00 rad.
+
+What rock *can* do is decide **which throws work**: where the tail may fall,
+what the tip's arc may pass through, where the body may hang and which way it
+may swing. Every feature on the crag is an **ordinary anchor** — `_add_anchor`,
+jam 0, r 0.12–0.20, the traverse's own radii — and the only thing that differs
+between them is the rock placed around them.
+
+### The vocabulary (a legend, because the level itself carries no captions)
+
+| feature | the rock | what it does to the throw, the hang, the swing |
+|---|---|---|
+| **HORN** | an anchor standing proud of a ledge on its far side: a shelf whose face is 0.30–0.60 m past the anchor and whose top is 0.60 m under it | the tail has to drop past the horn before it meets the ledge; the body hangs on the near side and the ledge is under the far half of the swing. **The vertical gap is the whole feature**: with the shelf top 0.30 m under the anchor the tail lies on it and nothing catches (0 of 36 strokes); at 0.60 m it drops past, and 9–12 of the same 36 lock |
+| **STALACTITE** | an anchor hanging 1.2–1.5 m under a slab of rock (a brow) | reachable only from below and the side — a throw that arcs high hits the ceiling — and a strong pump puts the rope, then the body, into the slab |
+| **KNOB** | an anchor on top of a rock: a lump 0.60 m under it | nothing can come at it from below, the tail cannot hang straight down, and the body hangs against the lump's face. **The knob is the betrayer**: 9 catches in 36 strokes and only 3 of them lock — the lump sits exactly where the tail would swing under to cross itself, so most catches are partial and pay out. At 0.30 m under, 9 catches and none held; deeper than 0.60 m, nothing caught at all |
+| **WINDOW** | an anchor inside a hood: a bar 0.90 m over it and a bar 0.45 m past it | the rope must go under the one and drop its tail between the anchor and the other — it threads the gap or it does not catch |
+| **BRANCH** | an anchor 0.45–0.50 m in front of a rib hanging from above to 0.8 m below it — and not the crag's own wall, which held 0 of 432 strokes | the tail cannot fly past, and the swing has one side |
+
+A knob's lump, a horn's ledge, a stalactite's brow, a window's hood and a
+branch's rib are all **islands**: closed loops of terrain in the play plane,
+wound solid-inside, that the rope and body collide with like any other rock.
+They float, and that is a measurement rather than a style: in a side view a
+column that reaches the floor is a wall across the route, and the lash gait
+carries the *hand* 1.21 m over the floor (body centre −0.28, hand 0.93 above
+it) — a lump whose underside was 0.95 m up stopped the crawl dead at x = −2.9
+with the handle pressed against its face. Everything over a floor a body crawls
+on clears 1.45 m, and the backdrop draws the pillar the lump is the top of.
+
+### The shape
+
+A gorge that steps down **27 m in nine 3.0 m drops over 59 m of route**, tiers
+5.5 m long against the traverse's 10 — it is dense — with a home tier of three
+features to warm up on, one feature at every lip, and a run-out to the flag.
+The **level contract is the traverse's, unchanged, because it is measured**: an
+anchor is catchable from a standstill only at ≤ ~2.4 m over the floor you throw
+from and launchable only with > ~3.2 m of air under the arc, so every door sits
+2.2 m over the tier it is thrown from and 5.2 m over the one it swings in. The
+lash gait cannot climb 20°, so every tier is flat, every drop faces along the
+route, and every island top a body can land on is flat and crawled off. There
+is no pit: `crag_gate` C7 walks the whole thing with the hand open, spawn to
+flag, in 97 s with the out-of-world net never tripping.
+
+| | x | y | r | rock |
+|---|---|---|---|---|
+| H0 **HORN** | −12.9 | −2.2 | 0.14 | thrown to the LEFT, its ledge toward the wall — the warm-up. This was the wall BRANCH: 0.50 m off the left wall it caught 3 of 216 searched strokes and held none; 1.20 m off it caught none. A wall that runs to the floor leaves the tail no room to swing under and cross, and the branch is the rib |
+| H1 **STALACTITE** | −8.3 | −2.2 | 0.12 | a brow 1.2 m over it, over the spawn |
+| H2 **WINDOW** | −2.0 | −2.2 | 0.12 | a hood over the home tier: 0.90 m over, 0.45 m past, its far bar 1.5 m clear of the floor |
+| D0 **HORN** | 4.4 | −2.2 | 0.14 | lip 3.0; the ledge 0.60 m past and 0.60 m under |
+| D1 **STALACTITE** | 9.9 | 0.8 | 0.12 | lip 8.5; a 5 m brow over the second tier |
+| D2 **WINDOW** | 15.4 | 3.8 | 0.12 | lip 14.0; hood 0.90 m over, 0.45 m past |
+| D3 **BRANCH** | 20.3 | 6.8 | 0.12 | lip 19.5, only 0.8 m past it; a rib 0.50 m past the anchor |
+| D4 **KNOB** | 26.4 | 9.8 | 0.14 | lip 25.0; lump 0.60 m under |
+| D5 **HORN** | 31.9 | 12.8 | 0.14 | lip 30.5; the ledge only 0.30 m past, 0.60 m under |
+| D6 **STALACTITE** | 37.4 | 15.8 | 0.12 | lip 36.0; a brow 1.5 m over it. At 1.0 m it caught at 5–6 rad and betrayed every time (0 of 216 held); at 1.2 m — D1's geometry, which locks on stroke 76 of its grid — it caught 3 of 216 and held none. The basin under a brow is small and the tip is chaotic; 1.5 m is where this one's reappears (stroke 19) |
+| D7 **WINDOW** | 42.9 | 18.8 | 0.12 | lip 41.5; hood 0.90 m over, 0.45 m past (it shipped first at 0.80 / 0.38: caught 3 of 36 at 4.27 rad and betrayed all three — a gap the tail cannot swing in is a wall, not difficulty) |
+| D8 **BRANCH** | 47.65 | 21.8 | 0.12 | lip 47.0, 0.65 m past it; rib 0.45 m past the anchor |
+
+Own save slot (`user://run_crag.save` — `crag_gate` C3 shows the traverse and
+the crag each refuse the other's save and accept their own), own spawn
+(−6.5, −1.0), own goal (x 52 on the floor at y 27), own fingerprint (with the
+fillets folded in — only when there are any, so the traverse's number does not
+move), own camera table (`CRAG_VOLS`, ten volumes, one per tier, the shelf and
+zoom of the traverse's), and `world_bottom` derived from the terrain as it is
+everywhere else.
+
+### What it cost the sim, and what it did not
+
+- **The rescue depth.** `_collide_point`'s rescue branch lifts a particle found
+  on a segment's solid side back onto that segment at *any* depth — right under
+  a floor, wrong under a 1 m slab: a tip flying in the air 0.5 m beneath the
+  brow is 1.5 m "inside" the brow's top edge, and the rescue put it on top. The
+  first build's whole chain crumpled onto the brow's underside inside 30 ticks
+  and the body hung off its own jammed handle 2.2 m up. Each segment now has a
+  rescue depth `t_deep` — half the distance along −n to the nearest terrain
+  behind it, derived in `_finish_terrain` — and INF wherever nothing is behind
+  it, which is every segment of the traverse and the lab (`crag_gate` C8), so
+  their rescue is the unbounded one they always had.
+- **The per-tick cull.** 69 segments and 55 arcs against 26 particles, sixteen
+  times a tick, measured 3.1× the traverse's tick. Each particle now lists its
+  candidate segments and arcs once a tick, from where it is at the top of the
+  tick with `CULL_TICK` = 3.0 m of slack over `CULL_MARGIN`, and the substeps
+  walk only those. It cannot change a result — a segment left off the list is
+  one the old cull would have skipped on every substep unless the particle
+  covered 3 m in a tick, and the fastest thing in the game is the tip at
+  85.7 m/s, 1.43 m a tick — and the golden hash and six tapes say it did not.
+  Measured alone on the lash gait: **traverse 5.4 ms/tick, crag 8.65 ms/tick**.
+- **The backdrop** is paint: `bd_poly` is drawn before the terrain and read by
+  nothing. The traverse and the lab leave it empty; the six frames of
+  `cam_view`'s door-tape shoot were photographed before and after and are
+  byte-identical (md5 equal on all six).
+- **Nothing about a catch changed.** `_circle_out` and `_swept_circle` are the
+  beam's contact code extracted, not copied, so a fillet cannot drift from a
+  beam's contact law; `_body_ground` is the floor's. The default level, the
+  lab, the six tapes and the golden hash are unchanged by all of it.
+
+### Reachability, measured
+
+Every feature, thrown at by a body that **crawled** to the standing spot with
+the lash gait (from the near end of its tier, or 1.9 m short of the spot as a
+second arrival), wound up 120 ticks, and threw `tests/lab_throw.gd`'s grid — 3
+leads × 6 stroke angles × 3 stroke lengths × pull, first with the wrap cue
+(shut the hand when the arc reads ≥ 2.6 rad) then with the arrival cue — until
+one **locked** and survived 55 ticks of holding. "stroke" is how far into the
+216 the first lock came: a small number is a big basin. The right-hand column
+is what 100 ticks of holding on then did (`crag_shots.gd`): a door hauls the
+body off its lip into the air; a home-tier feature holds it with its feet on
+the floor; two catches betrayed under the haul, which is the amber mechanic
+doing what it does.
+
+| feature | stroke | thrown from | cue | tether | holding on |
+|---|---|---|---|---|---|
+| H0 HORN (left, by the wall) | 42 | 2.4 m from x -10.50 on the floor at y 0.0 | wrap | 2.14 m | feet dragging on the home floor |
+| H1 STALACTITE | 42 | 2.4 m from x -5.89 on the floor at y 0.0 | wrap | 2.18 m | feet dragging on the home floor |
+| H2 WINDOW | 55 | 2.4 m from x -4.42 on the floor at y 0.0 | wrap | 2.47 m | feet dragging on the home floor |
+| D0 HORN | 19 | 2.0 m from x 2.41 on the floor at y 0.0 | wrap | 1.81 m | hangs in air |
+| D1 STALACTITE | 76 | 1.7 m from x 8.20 on the floor at y 3.0 | wrap | 1.58 m | betrayed during the haul, body fell |
+| D2 WINDOW | 67 | 2.4 m from x 12.99 on the floor at y 6.0 | wrap | 2.07 m | hangs in air |
+| D3 BRANCH (rib) | 19 | 2.0 m from x 18.30 on the floor at y 9.0 | touch | 2.01 m | hangs in air |
+| D4 KNOB | 25 (second arrival) | 2.0 m from x 24.42 on the floor at y 12.0 | wrap | 1.57 m | hangs in air |
+| D5 HORN | 20 | 2.0 m from x 29.92 on the floor at y 15.0 | wrap | 1.63 m | hangs in air |
+| D6 STALACTITE | 19 | 2.0 m from x 35.41 on the floor at y 18.0 | wrap | 1.80 m | held, hauled onto the lip's own fillet (body at x 36.28, y 18.48) |
+| D7 WINDOW | 25 | 2.0 m from x 40.91 on the floor at y 21.0 | wrap | 1.74 m | betrayed during the haul, body fell |
+| D8 BRANCH (rib) | 24 | 2.0 m from x 45.65 on the floor at y 24.0 | wrap | 1.92 m | hangs in air |
+
+Read the strokes against the traverse: under the same harness the traverse's
+own first door D1 locks on strokes 10, 19, 21 and 23 of 36 at one lead, and a
+crag horn with its ledge moved out of the way locks on 19, 21 and 23 — the
+same strokes. The rock does not change what a throw *is*; it changes which
+throws survive.
+
+What did not survive measurement:
+
+- **A wall that runs to the floor is not a branch.** An anchor 0.50 m off the
+  crag's left wall caught 3 of 216 searched strokes and held none; at 1.20 m
+  off it caught none. The rib branches (D3, D8), whose rib stops 0.8 m under
+  the anchor, both lock. H0 became a horn.
+- **A far-side rib does not change the throw at all.** Six rib geometries on
+  D3 (gaps 0.5–2.5 m, rib bottom at the anchor or 0.8 m under it) and the rib
+  removed gave *identical* results — 3 caught, 0 locked, 3 betrayed at one
+  lead. The strokes that reach a branch never touch its rib; the rib is there
+  for the swing, and D3 locks on stroke 19 of the full grid by the arrival cue.
+- **A knob is arrival-sensitive.** D4 caught 9 of 36 from a 1.9 m crawl-in and
+  0 of 36 from a 3.7 m one on the same tier; the gate's second arrival exists
+  because of it, and it locks on stroke 25 from there.
+- **Tight is not the same as hard.** A stalactite under 1.0 m of brow and a
+  window with 0.38 m past its anchor both *caught* (4–6 rad) and betrayed every
+  catch; the tail could not swing under to cross itself. Both were opened up.
+
+
+```
+... -s res://tests/crag_gate.gd [-- quick]   # C1 the shipped level is byte-identical:
+                                             #    fingerprint, hash, no arcs, no
+                                             #    backdrop, its own camera table
+                                             # C2 all 6 tapes still name it; the crag
+                                             #    names neither it nor the lab
+                                             # C3 own slot; cross-loads refused
+                                             # C4 every normal, ground and island,
+                                             #    points into the air the loops enclose
+                                             #    (derived from t_a/t_b, reversed
+                                             #    winding scores 0)
+                                             # C5 the fillet is tangent and leaves the
+                                             #    normals alone; a laid rope slides off;
+                                             #    an arc is never caught
+                                             # C6 every feature LOCKS from a searched
+                                             #    throw after a crawl-in (minutes)
+                                             # C7 walkable end to end, hand open
+                                             # C8 rescue depth INF on the shipped level,
+                                             #    finite behind every island face
+... -s res://tests/crag_shots.gd             # the same searched catches, states written out
+... -s res://tests/crag_view.gd -- in=user://crag_shots.dat out=DIR
+                                             # photographed through the real _draw (WINDOWED)
+```
+
 ## Test gates, and the instruments that are not gates
 
 ```
@@ -457,6 +664,7 @@ must pass before a commit:
 | `cam_gate.gd` | `PASS  camera gate` | C1–C5, see The camera |
 | `aud_gate.gd` | `PASS` | A1–A6, see Sound |
 | `lab_gate.gd` | `PASS  lab gates L1-L7` | the bench exists without touching the traverse |
+| `crag_gate.gd` | `PASS  crag gates C1-C8` | the crag exists without touching either, its rock is wound the right way, its arcs cannot hold, every feature is reached and the whole thing is walked (C6 takes minutes; `-- quick` skips it) |
 | `mark_rt.gd` | `PASS  mark_rt` | the recorder and its marker do not lie — and no test writes the player's slot |
 | `mark_kind.gd` | `PASS  mark_kind` | F and G latch different kinds, and only under `--record` |
 

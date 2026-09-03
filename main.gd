@@ -295,7 +295,41 @@ var world_bottom := 6.0               # y past which the body is out of the
                                       # teleported the player to spawn.
 var t_lo := PackedVector2Array()
 var t_hi := PackedVector2Array()
+var t_deep := PackedFloat32Array()    # m: how deep this segment's rescue may
+                                      # reach behind it - half the rock's
+                                      # thickness there, INF under a floor.
+                                      # Derived in _finish_terrain; see there.
 const CULL_MARGIN := 2.5              # m of slack around each segment's box
+# TERRAIN ARCS - collision-only circles, the fillet on a convex corner. A
+# polyline vertex is an infinitely sharp edge, and the rope snags on it: the
+# round-cap branch in _collide_point pushes a particle radially off a point,
+# so a chain dragged over a lip is deflected by whichever cap it met first,
+# not by the rock's shape. A fillet replaces that point with a circle the rope
+# and body collide with EXACTLY as they collide with a beam (the same
+# _circle_out / _swept_circle code, not a copy of it) and that the catch
+# machinery never sees: not in a_pos, so no winding is measured about it, no
+# _pinch, no ring, no lock. That is not a limitation, it is the physics. A
+# rope holds only by a self-pinch around something it can go fully round; a
+# rope over a corner touches at most (pi - interior angle) of it - 1.57 rad on
+# a 90 degree lip - against th_part = 3.4 and th_rel = 1.8, so a corner cannot
+# be an anchor whatever its radius, and a fillet is a corner the rope slides
+# off smoothly instead of catching on. tests/crag_gate.gd C5 proves both
+# halves. The default level has none, and level_fingerprint folds these in
+# only when there are some, so its number does not move.
+var t_arc_c := PackedVector2Array()   # centre
+var t_arc_r := PackedFloat32Array()   # radius
+var t_arc_ang := PackedVector2Array() # (start, end) angle of the EXPOSED arc,
+                                      # for _draw: the rest of the circle is
+                                      # inside the rock
+# THE BACKDROP - paint, behind the play plane. Filled polygons _draw lays down
+# before the terrain so a horn reads as rock growing out of a cliff and not as
+# a disc floating in a void. Nothing in the sim reads these: not _collide, not
+# the wraps, not the camera, not the fingerprint. In SNAP_SKIP as level
+# furniture. The traverse and the lab leave them empty and draw exactly the
+# frame they drew before (checked by photographing both builds of the door
+# tape and comparing the PNGs byte for byte).
+var bd_poly: Array = []               # PackedVector2Array each, in metres
+var bd_col := PackedColorArray()
 # A beam you have LET GO OF is not something your rope grips, and not something
 # it can be caught by. A capstan multiplies the tension you are holding; with
 # an open hand there is nothing to multiply, so the rope should simply slide
@@ -545,6 +579,11 @@ func _ready() -> void:
 		# OPEN too (+0.0280 m taut vs +0.0280 m open over 10 s), and an anchor
 		# like that turns this line into a lie.
 		hud.text = "THE WHIP - THE LAB   (--level lab)   flat ground, four stations, walk the length of it\n" + "SPACE / LMB = CLOSE YOUR HAND. A wrap only takes in the moment you close it.\n" + "BEAM and THIN BEAM are ordinary: you have to throw a CROSSING onto them.\n" + "JAM (pale collar) makes the crossing for you - it takes from angles a wrap will not.\n" + "Both let go the instant you open your hand. Green ring = it holds. Amber = it betrays."
+	elif level_id == "crag":
+		# The crag says only what it is. No feature is named on screen: like
+		# the traverse it teaches by consequence, and the rock around each
+		# anchor is the caption.
+		hud.text = "THE WHIP - THE CRAG   (--level crag)   a gorge, nine drops, the rock shapes every throw\n" + "SPACE / LMB = CLOSE YOUR HAND on the rope. A wrap only takes in the moment you close it,\n" + "and only holds while you hold. OPEN your hand and you leave the anchor that instant.\n" + "Rock cannot be wrapped - only the anchors hold. Green ring = it holds. Amber = it betrays."
 	canvas.add_child(hud)
 	status = Label.new()
 	status.position = Vector2(16, 146)
@@ -634,7 +673,11 @@ func setup_sim() -> void:
 	# (verified in tests/lab_gate.gd L4), and the very next autosave would then
 	# overwrite the run it just refused. Refusal alone is not enough; the
 	# refused run has to still be somewhere.
-	save_path = SAVE_PATH_LAB if level_id == "lab" else SAVE_PATH
+	save_path = SAVE_PATH
+	if level_id == "lab":
+		save_path = SAVE_PATH_LAB
+	elif level_id == "crag":
+		save_path = SAVE_PATH_CRAG
 	_reset()
 	_av_size()
 
@@ -648,8 +691,13 @@ func _build_level() -> void:
 	# tests/tape_verify.gd must still PASS 6 tapes - both checked in
 	# tests/lab_gate.gd, L1 and L2.
 	t_a.clear(); t_b.clear()
+	t_arc_c.clear(); t_arc_r.clear(); t_arc_ang.clear()
+	bd_poly.clear(); bd_col.clear()
+	cam_vols = CAM_VOLS
 	if level_id == "lab":
 		_build_lab()
+	elif level_id == "crag":
+		_build_crag()
 	else:
 		_build_traverse()
 
@@ -744,6 +792,101 @@ func _finish_terrain() -> void:
 		t_n.append(Vector2((t_b[i] - t_a[i]).y, -(t_b[i] - t_a[i]).x).normalized())
 		t_lo.append(Vector2(minf(t_a[i].x, t_b[i].x), minf(t_a[i].y, t_b[i].y)))
 		t_hi.append(Vector2(maxf(t_a[i].x, t_b[i].x), maxf(t_a[i].y, t_b[i].y)))
+	# HOW THICK IS THE ROCK BEHIND EACH SEGMENT. _collide_point's rescue branch
+	# lifts a particle it finds on a segment's solid side back onto that
+	# segment, at any depth - the right thing under a floor, where the solid
+	# side is rock all the way down. Under a 1.0 m slab of rock it is the
+	# wrong thing: a tip flying in the air 0.5 m beneath the slab is 1.5 m
+	# "inside" the slab's TOP edge, and the rescue put it on top of the slab.
+	# Measured on the crag's first build: the whole chain crumpled onto the
+	# underside of the brow over the spawn inside 30 ticks and the body hung
+	# off its own jammed handle 2.2 m above the floor for as long as the gait
+	# ran. So each segment's rescue reaches only HALF WAY to the nearest
+	# terrain behind it: a ray from its midpoint along -n, against every
+	# other segment. Past half way the particle is the far face's business.
+	# Nothing is behind any segment of the traverse or the lab, so every one
+	# of theirs reads INF, which is the unbounded rescue they always had.
+	t_deep.clear()
+	for i in t_a.size():
+		var mid := (t_a[i] + t_b[i]) * 0.5
+		var back := -t_n[i]
+		var best := INF
+		for j in t_a.size():
+			if j == i:
+				continue
+			var e := t_b[j] - t_a[j]
+			var den := back.cross(e)
+			if absf(den) < 0.000000001:
+				continue
+			var tt := (t_a[j] - mid).cross(e) / den
+			var uu := (t_a[j] - mid).cross(back) / den
+			if tt > 0.000001 and uu >= 0.0 and uu <= 1.0:
+				best = minf(best, tt)
+		t_deep.append(best * 0.5)
+
+func _fillet(v: Vector2, r: float) -> bool:
+	# ROUND A CONVEX CORNER. v is a vertex two terrain segments share (one ends
+	# there, the next begins there); the corner must be convex toward the air.
+	# Both segments are shortened to the tangent points of a circle of radius r
+	# that touches each of them from the rock side, and that circle goes into
+	# t_arc_c. Call it BEFORE _finish_terrain, which derives the normals and
+	# boxes from whatever t_a/t_b then hold.
+	#
+	# The geometry, so it can be checked rather than trusted (crag_gate C5
+	# does): with d1 the direction INTO the vertex along the first segment,
+	# d2 the direction OUT along the second, and n1, n2 their outward normals
+	# (dy, -dx), the centre c is the point at signed distance -r from both
+	# lines, (c - v).n1 = (c - v).n2 = -r, and the tangent points are
+	# t1 = c + r n1 on the first line and t2 = c + r n2 on the second. On a
+	# 90 degree lip that shortens each segment by exactly r; on a sharper
+	# corner by r / tan(theta / 2), which is what the 2x2 solve gives without
+	# a special case. The shortened segments keep their direction, so the
+	# outward normals _finish_terrain derives from them are unchanged.
+	#
+	# Convex is decided by the turn: walking the boundary with the air on the
+	# normal's side, a corner that sticks INTO the air turns away from the
+	# air, which with this winding is d1 x d2 > 0. A concave corner (the foot
+	# of a face meeting the floor below it) is refused: rounding it would put
+	# a circle in the air, not in the rock.
+	var i := -1
+	var j := -1
+	for s in t_a.size():
+		if t_b[s].distance_to(v) < 0.000001:
+			i = s
+		if t_a[s].distance_to(v) < 0.000001:
+			j = s
+	if i < 0 or j < 0 or i == j:
+		return false
+	var d1 := (v - t_a[i]).normalized()
+	var d2 := (t_b[j] - v).normalized()
+	if d1.cross(d2) <= 0.000001:
+		return false
+	var n1 := Vector2(d1.y, -d1.x)
+	var n2 := Vector2(d2.y, -d2.x)
+	var det := n1.x * n2.y - n1.y * n2.x
+	if absf(det) < 0.000001:
+		return false
+	var c := v + Vector2(r * (n1.y - n2.y) / det, r * (n2.x - n1.x) / det)
+	var t1 := c + n1 * r
+	var t2 := c + n2 * r
+	# a fillet may not eat a whole segment
+	if t1.distance_to(v) >= t_b[i].distance_to(t_a[i]) \
+			or t2.distance_to(v) >= t_b[j].distance_to(t_a[j]):
+		return false
+	t_b[i] = t1
+	t_a[j] = t2
+	t_arc_c.append(c)
+	t_arc_r.append(r)
+	# the exposed part of the circle is the short way round from t1 to t2;
+	# the rest is inside the rock and is not drawn
+	var a1 := (t1 - c).angle()
+	var a2 := (t2 - c).angle()
+	var sw := wrapf(a2 - a1, -PI, PI)
+	if sw >= 0.0:
+		t_arc_ang.append(Vector2(a1, a1 + sw))
+	else:
+		t_arc_ang.append(Vector2(a2, a2 - sw))
+	return true
 
 func _add_anchor(p: Vector2, r: float, jam: int, nm: String) -> void:
 	# One place that knows how wide the anchor tables are, so a level cannot
@@ -908,6 +1051,277 @@ func _build_lab() -> void:
 	for a: Array in stations:
 		_add_anchor(Vector2(a[0], a[1]), a[2], int(a[3]), String(a[4]))
 
+# -------------------------------------------------------------- THE CRAG --
+# --level crag. THE ENVIRONMENT IS THE THING THE WHIP INTERACTS WITH. On the
+# traverse every beam floats in open air and the terrain is a floor; the rope
+# collides with all of it (t_a/t_b/t_n, swept) and never meets any of it
+# except by falling on it. The crag puts rock around and between the anchors
+# so that each one is a different throw, a different hang and a different
+# swing - while every anchor stays an ORDINARY anchor: _add_anchor, jam 0,
+# r 0.12-0.20, the traverse's own radii. The difference is only ever the rock.
+#
+# WHY THE ROCK CANNOT BE THE ANCHOR, and this is the constraint the whole
+# level is shaped by rather than against: a rope holds by a self-pinch around
+# something it can go fully round. A rope over a terrain corner touches at
+# most (pi - interior angle) of it - 1.57 rad on a 90 degree lip - against
+# th_part = 3.4 to catch and th_rel = 1.8 to stay caught. A corner cannot be
+# an anchor, ever, and nothing here pretends one is: every convex corner the
+# rope can reach is filleted (_fillet), so it is a curve the rope slides
+# round instead of a point it snags on, and no fillet is in a_pos.
+#
+# WHAT THE ROCK CAN DO IS SHAPE EVERY THROW. The vocabulary, each one an
+# anchor plus the terrain placed around it (the numbers are the gaps the rope
+# has to fit through, against a rope radius of 0.02-0.05 m):
+#
+#   HORN        an anchor standing proud of a ledge, backed by rock: a shelf
+#               on the FAR side, its top 0.60 m under the anchor's bottom and
+#               its face 0.30-0.60 m past the anchor's edge. Measured (36
+#               strokes at one lead): with the top only 0.30 m under, the tail
+#               lies on the shelf and NOTHING catches; at 0.60 m under it
+#               drops past and 9-12 strokes lock. The body hangs on the near
+#               side and the shelf is under the far half of the swing.
+#   STALACTITE  an anchor hanging under an overhang: a slab of rock 1.2 m
+#               above it. Reachable only from below and the side - a throw
+#               that arcs high hits the ceiling - and a strong pump puts the
+#               rope, then the body, into the slab.
+#   KNOB        an anchor on top of a rock: a lump 0.60 m under it. Nothing
+#               can come at it from below, the tail cannot hang straight down,
+#               and the body hangs against the lump's face. It is the
+#               betrayer: measured 9 catches in 36 strokes and 3 locks - the
+#               lump is where the tail would swing under to cross itself, so
+#               most catches are partial and pay out. At 0.30 m under, 9
+#               catches and none held; deeper than 0.60, nothing caught.
+#   WINDOW      an anchor inside a hood: a bar over it (0.9 m clear) and a
+#               bar past it (0.45 m clear). The rope must go under the one
+#               and drop the tail between the anchor and the other.
+#   BRANCH      an anchor beside a vertical wall on its far side: a rib
+#               hanging from above to 0.8 m under the anchor, 0.45-0.50 m
+#               clear. The tail cannot fly past, and the swing has one
+#               side. NOT the crag's own wall: a wall that runs to the
+#               floor held 0 of 432 searched strokes (see H0).
+#
+# THE LEVEL CONTRACT is the traverse's, unchanged, because it is measured: an
+# anchor is catchable from a standstill only at <= ~2.4 m over the floor you
+# throw from, and launchable only with > ~3.2 m of air under the arc, so the
+# floor steps down 3.0 m past every anchor - 2.2 m over the tier you throw
+# from, 5.2 m over the one you swing in. The lash gait crawls flat ground at
+# ~0.42 m/s and cannot climb 20 degrees, so every tier is flat, every drop
+# faces along the route, and every island the body can land on is a flat top
+# it can crawl off. There is no pit: crag_gate C7 walks the whole thing with
+# the hand open and reaches the flag.
+#
+# THE SHAPE: a gorge that steps down 27 m in nine 3.0 m drops over 59 m of
+# route, tiers 5.5 m long (the traverse's are 10: this one is dense), a
+# home tier of three features to warm up on, one feature at every lip, and a
+# run-out to the flag. Own save slot (SAVE_PATH_CRAG), own spawn, own goal,
+# own camera table, own fingerprint; world_bottom is derived from the terrain
+# as it is everywhere else.
+#
+# ISLANDS. The rock a feature grows out of is a closed loop of terrain in the
+# play plane, wound solid-inside (clockwise on screen: top edge left to
+# right, so normalize(ab.y, -ab.x) points out of it). In a side view a column
+# that reaches the floor is a wall across the route, so every island floats:
+# the lowest is 2.05 m over its tier, 3.7x the body's height, and the
+# backdrop draws the rock that would join it to the cliff behind. The rope
+# and body collide with the loop like any terrain; crag_gate C4 checks every
+# normal, ground and island, against the air region the loops enclose.
+const CRAG_VOLS := [
+	[-15.0,  2.0,  0.0, 1.00],   # the home tier
+	[  2.0,  7.5,  3.0, 1.00],
+	[  7.5, 13.0,  6.0, 1.00],
+	[ 13.0, 18.5,  9.0, 1.00],
+	[ 18.5, 24.0, 12.0, 1.00],
+	[ 24.0, 29.5, 15.0, 1.00],
+	[ 29.5, 35.0, 18.0, 1.00],
+	[ 35.0, 40.5, 21.0, 1.00],
+	[ 40.5, 46.0, 24.0, 1.00],
+	[ 46.0, 54.0, 27.0, 1.00],   # the run-out and the flag
+]
+const BD_FAR := Color(0.125, 0.135, 0.17)    # the cliff behind the play plane
+const BD_MID := Color(0.155, 0.17, 0.215)    # rock joining a feature to it
+const BD_ROCK := Color(0.19, 0.205, 0.25)    # the solid the terrain line edges
+
+func _crag_rect(x0: float, y0: float, x1: float, y1: float) -> PackedVector2Array:
+	# clockwise on screen = solid inside, see the island winding above
+	return PackedVector2Array([Vector2(x0, y0), Vector2(x1, y0),
+		Vector2(x1, y1), Vector2(x0, y1)])
+
+func _crag_loop(pts: PackedVector2Array, closed: bool) -> void:
+	var n := pts.size() - (0 if closed else 1)
+	for i in n:
+		t_a.append(pts[i])
+		t_b.append(pts[(i + 1) % pts.size()])
+
+func _build_crag() -> void:
+	# THE GROUND: one open polyline from the top of the left wall to the top of
+	# the far seal, wound left to right along the floors so the outward normal
+	# is up on a floor, right on a face you drop off, left on the seal.
+	# Tier i has its floor at y = 3i and ends at the lip x = 3 + 5.5i; the home
+	# tier is longer so the spawn (-6.5) has the traverse's clearance from its
+	# wall (the tip lies at spawn.x - 0.4 - 5.20 = -12.1 at tick 0, the wall is
+	# at -15).
+	var lips: Array[float] = [3.0, 8.5, 14.0, 19.5, 25.0, 30.5, 36.0, 41.5, 47.0]
+	var g := PackedVector2Array([Vector2(-15, -10), Vector2(-15, 0)])
+	for i in lips.size():
+		g.append(Vector2(lips[i], 3.0 * i))
+		g.append(Vector2(lips[i], 3.0 * (i + 1)))
+	g.append(Vector2(54, 27))
+	g.append(Vector2(54, 17))                # the far seal
+	_crag_loop(g, false)
+	# THE ISLANDS. Each is [x0, y0, x1, y1]; the feature it serves is named in
+	# the anchor table below, with its gap. A lump under a knob is only 0.30 m
+	# thick, and that is a measurement: the lash gait carries the HAND 1.21 m
+	# over the floor (body centre -0.28, hand 0.93 above it), and a lump whose
+	# underside was 0.95 m up stopped the crawl dead at x = -2.9 with the
+	# handle pressed against its face. Anything over a floor a body crawls on
+	# clears 1.45 m, and the backdrop draws the pillar the lump is the top of.
+	var isl: Array = [
+		[-10.8, -4.4,  -5.8, -3.4],   # H1 brow:  1.2 m over the anchor
+		[-14.7, -1.46, -13.64, -1.25],# H0 shelf: 0.60 past (leftward) / 0.60
+		                              #   under; only 0.21 m thick because its
+		                              #   underside is over the home floor in a
+		                              #   dead-end corner the hand can reach
+		[  5.14, -1.46, 6.7, -0.76],  # D0 shelf: 0.60 past / 0.60 under
+		[  7.4, -1.6,  12.4, -0.4],   # D1 brow:  1.2 m over
+		[ 26.0, 10.54, 26.8, 11.14],  # D4 lump:  0.60 under
+		[ 32.34, 13.54, 33.9, 14.24], # D5 shelf: 0.30 past / 0.60 under
+		[ 34.9, 13.1,  39.9, 14.3],   # D6 brow:  1.5 m over. At 1.0 it caught
+		                              #   and never held (0 of 216 strokes), at
+		                              #   1.2 it caught 3 of 216 and held none -
+		                              #   D1, the same geometry 15 m up the
+		                              #   crag, locks on stroke 76 of its grid.
+		                              #   The basin under a brow is small and
+		                              #   the tip is chaotic; 1.5 m is where
+		                              #   this one's basin reappears.
+		[ 20.92, 2.0,  21.27, 7.6],   # D3 rib:   0.50 past the anchor's edge
+		[ 48.22, 17.0, 48.57, 22.6],  # D8 rib:   0.45
+	]
+	for r: Array in isl:
+		_crag_loop(_crag_rect(float(r[0]), float(r[1]), float(r[2]),
+			float(r[3])), true)
+	# the hoods, L-shaped: a bar over the anchor and a bar past it
+	var hood_h2 := PackedVector2Array([Vector2(-3.0, -3.5), Vector2(-1.0, -3.5),
+		Vector2(-1.0, -1.5), Vector2(-1.43, -1.5), Vector2(-1.43, -3.1),
+		Vector2(-3.0, -3.1)])                      # H2: 0.90 over, 0.45 past
+	var hood2 := PackedVector2Array([Vector2(14.4, 2.5), Vector2(16.4, 2.5),
+		Vector2(16.4, 4.5), Vector2(15.97, 4.5), Vector2(15.97, 2.9),
+		Vector2(14.4, 2.9)])                       # D2: 0.90 over, 0.45 past
+	var hood7 := PackedVector2Array([Vector2(41.9, 17.5), Vector2(43.9, 17.5),
+		Vector2(43.9, 19.5), Vector2(43.47, 19.5), Vector2(43.47, 17.9),
+		Vector2(41.9, 17.9)])                      # D7: 0.90 over, 0.45 past.
+		# It shipped first at 0.80 / 0.38: caught on 3 of 36 strokes at 4.27
+		# rad and betrayed every one inside 55 ticks. A gap the tail cannot
+		# swing in is not difficulty, it is a wall.
+	_crag_loop(hood_h2, true)
+	_crag_loop(hood2, true)
+	_crag_loop(hood7, true)
+	# FILLETS. Every lip at 0.35 m - the body stands on it and the rope is
+	# dragged over it on every crawl - and every island corner at 0.10, so the
+	# rope's tail slides round a shelf or a lump instead of snagging on its
+	# corner. Applied before _finish_terrain so the normals come from the
+	# shortened segments. (The concave inner corner of each hood is refused by
+	# _fillet, as it should be.)
+	for i in lips.size():
+		_fillet(Vector2(lips[i], 3.0 * i), 0.35)
+	for r: Array in isl:
+		for c: Vector2 in _crag_rect(float(r[0]), float(r[1]), float(r[2]),
+				float(r[3])):
+			_fillet(c, 0.10)
+	for c: Vector2 in hood_h2:
+		_fillet(c, 0.10)
+	for c: Vector2 in hood2:
+		_fillet(c, 0.10)
+	for c: Vector2 in hood7:
+		_fillet(c, 0.10)
+	_finish_terrain()
+
+	spawn = Vector2(-6.5, -1.0)
+	goal_x = 52.0
+	goal_y = 27.0
+	cam_vols = CRAG_VOLS
+
+	# THE FEATURES. Doors sit 1.4 m past their lip (branches 0.8 and 0.65:
+	# the wall IS the lip's face), 2.2 m over the tier they are thrown from,
+	# at the traverse's door radii. No captions: the crag teaches by
+	# consequence, as the traverse does; the legend is in the README.
+	#          x      y     r
+	var feats := [
+		[-12.9, -2.2, 0.14],   # H0 HORN     thrown LEFT, its ledge toward the
+		                       #    wall. It was the wall BRANCH: an anchor
+		                       #    0.50 m off the left wall caught 3 of 216
+		                       #    searched strokes and held none, and at
+		                       #    1.20 m off it caught none at all. A wall
+		                       #    that runs to the floor leaves the tail no
+		                       #    room to swing under and cross; the ribs
+		                       #    on D3 and D8, which stop 0.8 m under the
+		                       #    anchor, both lock. The branch is the rib.
+		[ -8.3, -2.2, 0.12],   # H1 STALACTITE under the brow
+		[ -2.0, -2.2, 0.12],   # H2 WINDOW   in a hood, over the home tier
+		[  4.4, -2.2, 0.14],   # D0 HORN     lip 3.0
+		[  9.9,  0.8, 0.12],   # D1 STALACTITE lip 8.5
+		[ 15.4,  3.8, 0.12],   # D2 WINDOW   lip 14.0
+		[ 20.3,  6.8, 0.12],   # D3 BRANCH   lip 19.5, 0.8 past it, rib
+		[ 26.4,  9.8, 0.14],   # D4 KNOB     lip 25.0
+		[ 31.9, 12.8, 0.14],   # D5 HORN     lip 30.5
+		[ 37.4, 15.8, 0.12],   # D6 STALACTITE lip 36.0, 1.0 m of ceiling
+		[ 42.9, 18.8, 0.12],   # D7 WINDOW   lip 41.5, 0.38 m gap
+		[ 47.65, 21.8, 0.12],  # D8 BRANCH   lip 47.0, 0.65 past it, rib
+	]
+	for a: Array in feats:
+		_add_anchor(Vector2(a[0], a[1]), a[2], 0, "")
+
+	# THE BACKDROP. Far cliff, then the rock joining each feature to it, then
+	# the near rock whose edge the terrain line is. Paint only.
+	var sky := PackedVector2Array([Vector2(-40, -14), Vector2(-9, -11),
+		Vector2(-3, -13.5), Vector2(3, -9), Vector2(8.5, -7.5), Vector2(14, -5),
+		Vector2(19.5, -3.5), Vector2(25, -1), Vector2(30.5, 1.5),
+		Vector2(36, 3.5), Vector2(41.5, 6), Vector2(47, 8), Vector2(54, 9.5),
+		Vector2(80, 12), Vector2(80, 60), Vector2(-40, 60)])
+	_bd(sky, BD_FAR)
+	# a pillar under each knob, a spike over each stalactite, a buttress
+	# behind each shelf, a curtain above each rib and hood - in the mid tone,
+	# behind the plane, so the feature reads as part of the crag
+	_bd(PackedVector2Array([Vector2(25.95, 11.0), Vector2(26.85, 11.0),
+		Vector2(27.3, 15.6), Vector2(25.5, 15.6)]), BD_MID)       # D4
+	for st: Array in [[-8.3, -3.4, -2.2], [9.9, -0.4, 0.8], [37.4, 14.3, 15.8]]:
+		_bd(PackedVector2Array([Vector2(st[0] - 0.42, st[1]),
+			Vector2(st[0] + 0.42, st[1]), Vector2(st[0], st[2] - 0.05)]),
+			BD_MID)
+	for br: Array in [[-10.8, -4.4, -5.8, -3.4], [7.4, -1.6, 12.4, -0.4],
+			[34.9, 13.1, 39.9, 14.3]]:
+		_bd(PackedVector2Array([Vector2(br[0] + 0.6, br[1]),
+			Vector2(br[2] - 0.4, br[1]), Vector2(br[2] + 0.6, br[1] - 2.5),
+			Vector2(br[0] - 0.2, br[1] - 2.5)]), BD_MID)
+	_bd(PackedVector2Array([Vector2(-13.7, -1.3), Vector2(-14.7, -1.4),
+		Vector2(-15.0, 1.0), Vector2(-13.3, 1.0)]), BD_MID)          # H0
+	for sh: Array in [[5.14, -1.46, 6.7, -0.76], [32.34, 13.54, 33.9, 14.24]]:
+		_bd(PackedVector2Array([Vector2(sh[0] + 0.5, sh[1] + 0.2),
+			Vector2(sh[2], sh[1]), Vector2(sh[2] + 1.2, sh[1] - 1.6),
+			Vector2(sh[2] + 1.6, sh[3] + 1.4), Vector2(sh[2], sh[3] + 0.5)]),
+			BD_MID)
+	for rb: Array in [[20.92, 2.0, 21.27, 7.6], [48.22, 17.0, 48.57, 22.6],
+			[14.4, 2.5, 16.4, 2.9], [41.9, 17.5, 43.9, 17.9], [-3.0, -3.5, -1.0, -3.1]]:
+		_bd(PackedVector2Array([Vector2(rb[0] - 0.3, rb[1] + 0.3),
+			Vector2(rb[2] + 0.3, rb[1] + 0.3), Vector2(rb[2] + 0.5, rb[1] - 3.0),
+			Vector2(rb[0] - 0.5, rb[1] - 3.0)]), BD_MID)
+	# the near rock: everything under the ground polyline and beyond both
+	# walls, closed round the outside; then each island, solid
+	var near := PackedVector2Array([Vector2(-40, -10)])
+	near.append_array(g)
+	near.append_array(PackedVector2Array([Vector2(80, 17), Vector2(80, 60),
+		Vector2(-40, 60)]))
+	_bd(near, BD_ROCK)
+	for r: Array in isl:
+		_bd(_crag_rect(float(r[0]), float(r[1]), float(r[2]), float(r[3])),
+			BD_ROCK)
+	_bd(hood_h2, BD_ROCK)
+	_bd(hood2, BD_ROCK)
+	_bd(hood7, BD_ROCK)
+
+func _bd(poly: PackedVector2Array, col: Color) -> void:
+	bd_poly.append(poly)
+	bd_col.append(col)
+
 func _reset() -> void:
 	pos.resize(NP); prv.resize(NP)
 	inv_m.resize(NP); p_rad.resize(NP)
@@ -1015,17 +1429,27 @@ const CAM_EDGE := 2.0                 # m the body may never come within of an e
 const CAM_WZ := 2.0                   # rad/s, critically damped on ln(zoom)
 const CAM_ZRATE := 0.08               # 1/s, hard cap on |d ln(zoom)/dt|
 
-static func cam_vol(x: float) -> int:
-	for i in CAM_VOLS.size():
-		if x < float(CAM_VOLS[i][1]):
-			return i
-	return CAM_VOLS.size() - 1
+# THE TABLE IS PER LEVEL. CAM_VOLS above is the traverse's; the lab shares it
+# (one volume, by construction - see _build_lab), and the crag has its own,
+# because its tiers are 5.5 m long and there are ten of them. The table
+# travels INSIDE the camera's own state dictionary, so the law stays a static
+# function of (state, body, velocity, dt) with nothing else in scope - the
+# same discipline as before, and the same 23 banned names in cam_gate C1.
+# Every caller that passes no table gets the traverse's, which is how every
+# committed camera test still measures the shipped camera.
+var cam_vols: Array = CAM_VOLS
 
-static func cam_new(b: Vector2) -> Dictionary:
-	var i := cam_vol(b.x)
+static func cam_vol(x: float, vols: Array = CAM_VOLS) -> int:
+	for i in vols.size():
+		if x < float(vols[i][1]):
+			return i
+	return vols.size() - 1
+
+static func cam_new(b: Vector2, vols: Array = CAM_VOLS) -> Dictionary:
+	var i := cam_vol(b.x, vols)
 	return {"vlp": Vector2.ZERO, "x": b.x,
-		"y": float(CAM_VOLS[i][2]) + CAM_SHELF, "vy": 0.0, "vi": i,
-		"lz": log(float(CAM_VOLS[i][3])), "vz": 0.0}
+		"y": float(vols[i][2]) + CAM_SHELF, "vy": 0.0, "vi": i,
+		"lz": log(float(vols[i][3])), "vz": 0.0, "vols": vols}
 
 static func cam_scale(st: Dictionary) -> float:
 	return exp(float(st["lz"]))
@@ -1054,10 +1478,11 @@ static func cam_law(st: Dictionary, b: Vector2, v: Vector2,
 	# WHICH VOLUME, with hysteresis: the shelf steps down when the body first
 	# passes the lip, and back only if it returns well past it. Measured over
 	# every trace the game can produce: exactly one step per drop, no flapping.
+	var vols: Array = st["vols"]
 	var vi: int = int(st["vi"])
-	while vi + 1 < CAM_VOLS.size() and b.x > float(CAM_VOLS[vi][1]) + CAM_HYST:
+	while vi + 1 < vols.size() and b.x > float(vols[vi][1]) + CAM_HYST:
 		vi += 1
-	while vi > 0 and b.x < float(CAM_VOLS[vi][0]) - CAM_HYST:
+	while vi > 0 and b.x < float(vols[vi][0]) - CAM_HYST:
 		vi -= 1
 	st["vi"] = vi
 	# THE FALLBACK, and it is always live rather than a mode with an edge to
@@ -1069,7 +1494,7 @@ static func cam_law(st: Dictionary, b: Vector2, v: Vector2,
 	# volume was written for, this takes the camera off the shelf and back onto
 	# the body continuously, with no discontinuity to see. On this level it is a
 	# net that never fires: worst measured approach to an edge is 3.09 m.
-	var ty := float(CAM_VOLS[vi][2]) + CAM_SHELF
+	var ty := float(vols[vi][2]) + CAM_SHELF
 	var half := VIEW_H * 0.5 / cam_scale(st) - CAM_EDGE
 	ty = clampf(ty, b.y - half, b.y + half)
 	# VERTICAL: critically damped, not one-pole. A one-pole step is fastest at
@@ -1109,17 +1534,18 @@ func cam_apply(dt: float) -> void:
 	if cam_st.is_empty():
 		cam_st = cam_new(body_pos)
 	var c := cam_law(cam_st, body_pos, _body_vel(), dt)
-	var z := cam_zoom_step(cam_st, float(CAM_VOLS[int(cam_st["vi"])][3]), dt)
+	var z := cam_zoom_step(cam_st, float(cam_st["vols"][int(cam_st["vi"])][3]),
+		dt)
 	cam.position = c * PPM
 	cam.zoom = Vector2(z, z)
 
 func cam_reinit() -> void:
 	# The body has jumped - spawn, R, or a save being resumed - so the camera
 	# starts ON its shelf rather than sliding onto it from wherever it was.
-	cam_st = cam_new(body_pos)
+	cam_st = cam_new(body_pos, cam_vols)
 	if cam == null:
 		return
-	var z := float(CAM_VOLS[int(cam_st["vi"])][3])
+	var z := float(cam_vols[int(cam_st["vi"])][3])
 	cam.position = Vector2(float(cam_st["x"]), float(cam_st["y"])) * PPM
 	cam.zoom = Vector2(z, z)
 # ---- end camera ----
@@ -1265,7 +1691,8 @@ func _process(d: float) -> void:
 		var secs := run_ticks / 60.0
 		var line := "time %.1fs   falls %d   tip %.0f m/s" % [secs, falls, tip_speed]
 		if finished:
-			line = "TRAVERSE COMPLETE in %.1fs - press R to run it again" % secs
+			line = "%s COMPLETE in %.1fs - press R to run it again" % [
+				"CRAG" if level_id == "crag" else "TRAVERSE", secs]
 		if rec_on:
 			line += "   [REC %d   F = green dropped me   G = should have hooked   marks %d]" % [rec_cur.size(), rec_mark.size()]
 			# A MARK THAT IS NOT ACKNOWLEDGED GETS PRESSED TWICE, and two presses
@@ -1301,6 +1728,7 @@ func step_tick(cursor_world_m: Vector2, grip: bool) -> void:
 
 	if av_on:
 		av_touch.fill(0)
+	_cull_tick()
 
 	var max_tip := 0.0
 	for s in SUB:
@@ -1412,9 +1840,56 @@ func _collide() -> void:
 		_collide_point(i, p_rad[i])
 	_collide_body()
 
+const CULL_TICK := 3.0                # m a particle is allowed to travel in
+                                      # ONE TICK for the per-tick candidate
+                                      # lists to be exact. The fastest thing
+                                      # the game produces is the tip at
+                                      # 85.7 m/s, which is 1.43 m a tick.
+var cand_seg: Array = []              # per particle: the segments within
+                                      # CULL_MARGIN + CULL_TICK of it at the
+                                      # top of the tick, in index order
+var cand_arc: Array = []              # the same for the terrain arcs
+
+func _cull_tick() -> void:
+	# ONCE A TICK, NOT SIXTEEN TIMES. The per-substep box cull below is what
+	# kept 26 particles x 11 segments x 16 substeps affordable on the
+	# traverse; the crag has 69 segments and 55 arcs, and measured 51.6 ms a
+	# tick against the traverse's 16.4 on the same contended run - 3.1x, and
+	# past the 16.7 ms frame. So each particle's candidates are listed once,
+	# from where it is at the top of the tick, with CULL_TICK of slack on top
+	# of CULL_MARGIN, and the substeps walk only those. This cannot change a
+	# result: a segment left off the list is one the old cull would have
+	# skipped on every substep of this tick unless the particle covered
+	# CULL_TICK metres inside it, and nothing here moves at 180 m/s. The
+	# golden hash and the six tapes are the proof, and they held.
+	if cand_seg.size() != NP:
+		cand_seg.resize(NP)
+		cand_arc.resize(NP)
+	var mg := CULL_MARGIN + CULL_TICK
+	for i in NP:
+		var p := pos[i]
+		var cs := PackedInt32Array()
+		for s in t_a.size():
+			if p.x < t_lo[s].x - mg or p.x > t_hi[s].x + mg \
+					or p.y < t_lo[s].y - mg or p.y > t_hi[s].y + mg:
+				continue
+			cs.append(s)
+		cand_seg[i] = cs
+		var ca := PackedInt32Array()
+		for j in t_arc_c.size():
+			var c := t_arc_c[j]
+			var rr: float = t_arc_r[j] + p_rad[i] + CULL_TICK
+			if p.x < c.x - rr or p.x > c.x + rr or p.y < c.y - rr \
+					or p.y > c.y + rr:
+				continue
+			ca.append(j)
+		cand_arc[i] = ca
+
 func _collide_point(i: int, pr: float) -> void:
 	var p := pos[i]
-	for s in t_a.size():
+	if cand_seg.size() != NP:
+		_cull_tick()              # a probe stepping the substeps by hand
+	for s: int in cand_seg[i]:
 		if p.x < t_lo[s].x - CULL_MARGIN or p.x > t_hi[s].x + CULL_MARGIN 				or p.y < t_lo[s].y - CULL_MARGIN or p.y > t_hi[s].y + CULL_MARGIN:
 			continue
 		var A := t_a[s]
@@ -1431,6 +1906,15 @@ func _collide_point(i: int, pr: float) -> void:
 			var sd := d.dot(n)
 			if sd < pr:
 				if sd < 0.0:
+					# Deeper than half the rock behind this segment: the
+					# particle is in the air on the far side of a slab, or
+					# nearer its far face. Not this segment's contact. Inside
+					# the rescue branch so the in-span path pays nothing for
+					# it; t_deep is INF wherever nothing is behind a segment,
+					# which is everywhere on the shipped level, and the size
+					# guard is for the probes that rebuild t_a by hand.
+					if s < t_deep.size() and sd < -t_deep[s]:
+						continue
 					# rescue: carry the velocity it arrived with, so the
 					# lift-out displacement never becomes velocity.
 					#
@@ -1477,46 +1961,60 @@ func _collide_point(i: int, pr: float) -> void:
 				if av_on:
 					av_touch[i] = 1
 	for k in a_pos.size():
-		var d2 := p - a_pos[k]
-		var rr := a_r[k] + pr
-		if d2.length_squared() >= rr * rr:
-			continue
-		var l2 := d2.length()
-		if l2 > 0.0001:
-			var n2 := d2 / l2
-			pos[i] = a_pos[k] + n2 * rr
-			# engaged wrap = static contact (the crossing chain pinches the
-			# tail in reality; here the whole wrap freezes and ALL slip is
-			# expressed through the payout mechanism, so it is deterministic
-			# and audible). Free contact = kinetic friction. A traveling
-			# wave still frees any wrap by lifting segments OFF contact
-			# (no contact -> no friction -> theta drops -> release).
-			# static (self-pinch stand-in) applies to the wrap and its tail
-			# - the material at and beyond the pin is what holds the turn on
-			# the beam. Free chain on the HAND side of the wrap still slides
-			# normally, so brushing an engaged anchor elsewhere does not
-			# velcro the whip to it.
-			# static (self-pinch stand-in) ONLY for the stretch of chain that
-			# was in the wrap when it engaged - that window rides along with
-			# the pin as material pays through. Chain arriving afterwards is
-			# not part of the pinch: it slides, so the coil cannot accrete.
-			# static (self-pinch stand-in) for the wrap and its free tail - the
-			# tail is what holds the turn on the beam. But NOT for chain on the
-			# HAND side of where the wrap began: that boundary rides along with
-			# the pin, and it is the side the coil accretes from. Without it,
-			# every new contact glues on and the whole whip spools onto the
-			# beam (measured: 24 of 26 particles, handle included).
-			# Static grip covers ONLY the stretch of chain that was in the
-			# wrap when it engaged. Measured: the coil is fed tip-ward, so
-			# leaving the tip side unbounded welded every further touch and
-			# spooled the whole whip onto the beam.
-			var mu := anchor_mu
-			if a_freelen[k] >= 0.0 and i >= a_pinidx[k] + a_wlo[k] and i <= a_pinidx[k] + a_whi[k]:
-				mu = 8.0
-			elif a_armed[k] == 0:
-				mu = RELEASED_MU      # let go of: it slides, it does not grip
-			_friction(i, n2, mu, rr - l2)
-			p = pos[i]
+		# engaged wrap = static contact (the crossing chain pinches the
+		# tail in reality; here the whole wrap freezes and ALL slip is
+		# expressed through the payout mechanism, so it is deterministic
+		# and audible). Free contact = kinetic friction. A traveling
+		# wave still frees any wrap by lifting segments OFF contact
+		# (no contact -> no friction -> theta drops -> release).
+		# static (self-pinch stand-in) applies to the wrap and its tail
+		# - the material at and beyond the pin is what holds the turn on
+		# the beam. Free chain on the HAND side of the wrap still slides
+		# normally, so brushing an engaged anchor elsewhere does not
+		# velcro the whip to it.
+		# static (self-pinch stand-in) ONLY for the stretch of chain that
+		# was in the wrap when it engaged - that window rides along with
+		# the pin as material pays through. Chain arriving afterwards is
+		# not part of the pinch: it slides, so the coil cannot accrete.
+		# static (self-pinch stand-in) for the wrap and its free tail - the
+		# tail is what holds the turn on the beam. But NOT for chain on the
+		# HAND side of where the wrap began: that boundary rides along with
+		# the pin, and it is the side the coil accretes from. Without it,
+		# every new contact glues on and the whole whip spools onto the
+		# beam (measured: 24 of 26 particles, handle included).
+		# Static grip covers ONLY the stretch of chain that was in the
+		# wrap when it engaged. Measured: the coil is fed tip-ward, so
+		# leaving the tip side unbounded welded every further touch and
+		# spooled the whole whip onto the beam.
+		# The mu is decided before the contact is tested: it is integer
+		# state and costs nothing, and it is what lets the push itself be
+		# one function shared with the terrain arcs below.
+		var mu := anchor_mu
+		if a_freelen[k] >= 0.0 and i >= a_pinidx[k] + a_wlo[k] and i <= a_pinidx[k] + a_whi[k]:
+			mu = 8.0
+		elif a_armed[k] == 0:
+			mu = RELEASED_MU      # let go of: it slides, it does not grip
+		_circle_out(i, a_pos[k], a_r[k] + pr, mu)
+	# A FILLET IS TERRAIN: ground friction, the grit voice, and nothing the
+	# catch machinery reads. Same push as a beam, by the same function.
+	for j: int in cand_arc[i]:
+		if _circle_out(i, t_arc_c[j], t_arc_r[j] + pr, ground_mu) and av_on:
+			av_touch[i] = 1
+
+func _circle_out(i: int, c: Vector2, rr: float, mu: float) -> bool:
+	# Push particle i out of the circle (c, rr), rr already including the
+	# particle's own radius, and apply Coulomb friction to the contact. This
+	# is the anchor push verbatim - the beam loop above and the arc loop
+	# below both call it, so a fillet cannot drift from a beam's contact law.
+	var d2 := pos[i] - c
+	if d2.length_squared() >= rr * rr:
+		return false
+	var l2 := d2.length()
+	if l2 > 0.0001:
+		var n2 := d2 / l2
+		pos[i] = c + n2 * rr
+		_friction(i, n2, mu, rr - l2)
+	return true
 
 func _friction(i: int, n: Vector2, mu: float, pen := 0.0) -> void:
 	# inelastic normal + Coulomb tangential: friction is proportional to the
@@ -1545,22 +2043,37 @@ func _swept_anchor(i: int) -> void:
 		return
 	var slo := Vector2(minf(p0.x, p1.x), minf(p0.y, p1.y))
 	var shi := Vector2(maxf(p0.x, p1.x), maxf(p0.y, p1.y))
+	# p0, p1 and seg describe the path ONCE, before any beam is resolved -
+	# that was always so (a contact rewrote pos[i], never these), and it is
+	# why they are handed to the helper rather than re-read from it.
 	for k in a_pos.size():
-		var c := a_pos[k]
-		var rk: float = a_r[k] + p_rad[i]
-		if shi.x < c.x - rk or slo.x > c.x + rk 				or shi.y < c.y - rk or slo.y > c.y + rk:
-			continue
-		var tt := clampf((c - p0).dot(seg) / lsq, 0.0, 1.0)
-		var q := p0 + seg * tt
-		var rr := a_r[k] + p_rad[i]
-		if q.distance_to(c) < rr:
-			var n := (p1 - c)
-			if n.length() < 0.0001:
-				n = (q - c)
-			if n.length() < 0.0001:
-				n = Vector2.UP
-			pos[i] = c + n.normalized() * rr
-			_friction(i, n.normalized(), anchor_mu)
+		_swept_circle(i, p0, p1, seg, lsq, slo, shi, a_pos[k], a_r[k],
+			anchor_mu)
+	if cand_arc.size() != NP:
+		_cull_tick()
+	for j: int in cand_arc[i]:
+		_swept_circle(i, p0, p1, seg, lsq, slo, shi, t_arc_c[j], t_arc_r[j],
+			ground_mu)
+
+func _swept_circle(i: int, p0: Vector2, p1: Vector2, seg: Vector2,
+		lsq: float, slo: Vector2, shi: Vector2, c: Vector2, r: float,
+		mu: float) -> void:
+	# Anti-tunnel for one particle's substep path against one circle: the
+	# beam sweep verbatim, shared with the terrain arcs.
+	var rk: float = r + p_rad[i]
+	if shi.x < c.x - rk or slo.x > c.x + rk 			or shi.y < c.y - rk or slo.y > c.y + rk:
+		return
+	var tt := clampf((c - p0).dot(seg) / lsq, 0.0, 1.0)
+	var q := p0 + seg * tt
+	var rr := r + p_rad[i]
+	if q.distance_to(c) < rr:
+		var n := (p1 - c)
+		if n.length() < 0.0001:
+			n = (q - c)
+		if n.length() < 0.0001:
+			n = Vector2.UP
+		pos[i] = c + n.normalized() * rr
+		_friction(i, n.normalized(), mu)
 
 func _swept_terrain(i: int) -> void:
 	var p0 := prv[i]
@@ -1570,7 +2083,9 @@ func _swept_terrain(i: int) -> void:
 		return
 	var mlo := Vector2(minf(p0.x, p1.x), minf(p0.y, p1.y))
 	var mhi := Vector2(maxf(p0.x, p1.x), maxf(p0.y, p1.y))
-	for s in t_a.size():
+	if cand_seg.size() != NP:
+		_cull_tick()
+	for s: int in cand_seg[i]:
 		# exact: two segments cannot cross if their boxes do not overlap
 		if mhi.x < t_lo[s].x or mlo.x > t_hi[s].x 				or mhi.y < t_lo[s].y or mlo.y > t_hi[s].y:
 			continue
@@ -1690,16 +2205,25 @@ func _collide_body() -> void:
 		if l < BODY_R and l > 0.0001:
 			var n := d / l
 			body_pos = q + n * BODY_R
-			var v := body_pos - body_prv
-			var vn_amt := v.dot(n)
-			var vt := v - n * vn_amt
-			var vt_len := vt.length()
-			var cap := ground_mu * (absf(vn_amt) + GRAV.y * SDT * SDT) * 3.0
-			if vt_len > 0.000001:
-				vt *= maxf(vt_len - cap, 0.0) / vt_len
-			body_prv = body_pos - vt
-			grounded = true
+			_body_ground(n)
 			p = body_pos
+	# A FILLET IS GROUND. The body standing on a rounded lip is standing on
+	# terrain: same friction as the segment it joins, and it counts as
+	# grounded, because _update_locks reads grounded to decide a partial wrap
+	# is unloaded, and a body resting on the lip's own curve is not hanging.
+	# (A beam, below, deliberately sets neither - see there.)
+	for j in t_arc_c.size():
+		var dj := p - t_arc_c[j]
+		var rj: float = t_arc_r[j] + BODY_R
+		if dj.length_squared() >= rj * rj:
+			continue
+		var lj := dj.length()
+		if lj <= 0.0001:
+			continue
+		var nj := dj / lj
+		body_pos = t_arc_c[j] + nj * rj
+		_body_ground(nj)
+		p = body_pos
 	# THE BEAMS ARE SOLID. This loop used to be missing entirely: the body was
 	# tested against terrain and nothing else, so it passed clean through the
 	# very beam it was hanging from - measured at up to 0.50 m of overlap, the
@@ -1764,6 +2288,22 @@ func _collide_body() -> void:
 		body_pos = a_pos[k] + nk * rr
 		body_prv = body_pos - (vk - nk * minf(vk.dot(nk), 0.0))
 		p = body_pos
+
+func _body_ground(n: Vector2) -> void:
+	# The body's contact with TERRAIN, after body_pos has been placed on the
+	# surface: Coulomb friction on the tangential part, capped by the normal
+	# impulse proxy, and grounded = true. Verbatim from the segment branch
+	# above; shared with the arcs so a rounded lip is the same ground as the
+	# flat it joins.
+	var v := body_pos - body_prv
+	var vn_amt := v.dot(n)
+	var vt := v - n * vn_amt
+	var vt_len := vt.length()
+	var cap := ground_mu * (absf(vn_amt) + GRAV.y * SDT * SDT) * 3.0
+	if vt_len > 0.000001:
+		vt *= maxf(vt_len - cap, 0.0) / vt_len
+	body_prv = body_pos - vt
+	grounded = true
 
 # ------------------------------------------------------------- wrap logic --
 func _measure_wraps() -> void:
@@ -2158,9 +2698,22 @@ func _events() -> void:
 
 # -------------------------------------------------------------------- draw --
 func _draw() -> void:
+	# the backdrop first, so everything that matters is drawn over it
+	for j in bd_poly.size():
+		var poly: PackedVector2Array = bd_poly[j]
+		var px := PackedVector2Array()
+		px.resize(poly.size())
+		for q in poly.size():
+			px[q] = poly[q] * PPM
+		draw_colored_polygon(px, bd_col[j])
 	# terrain
 	for s in t_a.size():
 		draw_line(t_a[s] * PPM, t_b[s] * PPM, Color(0.32, 0.35, 0.42), 6.0)
+	# and the fillets, as terrain: the same colour and weight, only the
+	# exposed arc, so a rounded lip reads as one continuous edge of rock
+	for j in t_arc_c.size():
+		draw_arc(t_arc_c[j] * PPM, t_arc_r[j] * PPM, t_arc_ang[j].x,
+			t_arc_ang[j].y, 12, Color(0.32, 0.35, 0.42), 6.0)
 	# goal flag. Skipped where there is no goal: the lab parks goal_x past its
 	# own right wall, and a flag no one can reach is a promise the level is not
 	# making.
@@ -2922,6 +3475,7 @@ const SAVE_MAGIC := 0x57485031        # "WHP1"
 const SAVE_VERSION := 1
 const SAVE_PATH := "user://run.save"
 const SAVE_PATH_LAB := "user://run_lab.save"
+const SAVE_PATH_CRAG := "user://run_crag.save"
 const AUTOSAVE_TICKS := 30            # half a second: the most a crash can cost
 
 # WHAT IS THE SIMULATION is answered by the object, not by a list kept by hand.
@@ -2949,6 +3503,15 @@ const SNAP_SKIP := ["external_drive", "save_enabled", "save_path", "save_due",
 	# for - and re-recording is not free, it is the deliberate loss of the only
 	# regression test this project has against the behaviour it has today.
 	"level_id", "a_jam", "a_name", "goal_y", "jam_min_th",
+	# CRAG FURNITURE, by the same rule: the terrain arcs are level geometry
+	# rebuilt by _build_level on every boot (as t_a/t_b would be, were they
+	# not older than the snapshot), the backdrop is paint, and the camera's
+	# volume table is authored per level and read by nothing in the sim.
+	"t_arc_c", "t_arc_r", "t_arc_ang", "t_deep", "bd_poly", "bd_col",
+	"cam_vols",
+	# and the per-tick candidate lists, rebuilt at the top of every tick from
+	# the particles' positions - derived, never carried
+	"cand_seg", "cand_arc",
 	# THE CAMERA IS NOT THE SIMULATION either, and by the same argument as the
 	# audio below it: cam_st is a pure function of a finished tick's body
 	# position and velocity, it feeds nothing back, and a save that carried it
@@ -3058,6 +3621,14 @@ func level_fingerprint() -> int:
 		h = _fnv(h, a_pos[k].x); h = _fnv(h, a_pos[k].y); h = _fnv(h, a_r[k])
 	h = _fnv(h, spawn.x); h = _fnv(h, spawn.y)
 	h = _fnv(h, goal_x); h = _fnv(h, world_bottom)
+	# The arcs are folded in ONLY when there are any. Folding in an empty
+	# count would still be one more _fnv on the shipped level, and its number
+	# is 8896234646103814336 in six tapes and the player's save.
+	if t_arc_c.size() > 0:
+		h = _fnv(h, float(t_arc_c.size()))
+		for j in t_arc_c.size():
+			h = _fnv(h, t_arc_c[j].x); h = _fnv(h, t_arc_c[j].y)
+			h = _fnv(h, t_arc_r[j])
 	return h
 
 func save_to(path: String) -> bool:
@@ -3469,10 +4040,11 @@ func _boot_session() -> void:
 		print("RECORDING to %s" % rec_path)
 
 static func _cmdline_level() -> String:
-	# godot --path . -- --level lab. Static, and read straight from the command
-	# line, because _build_level needs it and _build_level runs before
-	# _boot_session does. Anything other than "lab" is the shipped traverse,
-	# which is also what no flag at all means - the default is the default.
+	# godot --path . -- --level lab | crag. Static, and read straight from the
+	# command line, because _build_level needs it and _build_level runs before
+	# _boot_session does. Anything other than "lab" or "crag" is the shipped
+	# traverse, which is also what no flag at all means - the default is the
+	# default.
 	var args := OS.get_cmdline_user_args()
 	for i in args.size():
 		if args[i] == "--level" and i + 1 < args.size():

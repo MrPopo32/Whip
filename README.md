@@ -426,7 +426,7 @@ anchor shapes:
                                    # which is why cam_view was always run with one
 ```
 
-## THE CRAG — a third level, where the rock shapes every throw
+## THE CRAG — a third level, where the rock decides which throws survive
 
 ```
 "C:\Users\judeb\Downloads\Godot_v4.7.2-stable_win64.exe\Godot_v4.7.2-stable_win64_console.exe" --path "C:\Users\judeb\Downloads\the-whip" -- --level crag
@@ -584,6 +584,33 @@ same strokes. The rock does not change what a throw *is*; it changes which
 throws survive.
 
 What did not survive measurement:
+
+- **The rock is not a vocabulary.** The crag was built to test whether terrain
+  around an anchor forces a *different throw* — the darts-or-golf question that
+  had already retired the jam (same press window, same aim basin as a beam)
+  and the crack (one motion covers 87.5% of everything strikeable).
+  `tests/route_variety.gd` asks it of a whole level: stand on every reachable
+  floor cell, throw the motion grid at every anchor, count how many *distinct
+  motions* (cursor paths merged under 50 mm; standing position deliberately not
+  a motion, since "same throw, stood elsewhere" is what darts means) cover 90%
+  of what can be locked. The traverse: one motion covers 80%, two cover 100%.
+  The lab: one covers 100%. **The crag: one covers 75%, two 92%, three 100%** —
+  the same shape, and nine of its twelve features share the traverse doors'
+  best motion (a0 1.10π, a1 −0.30π, no pull). The instrument reproduces
+  `lab_throw`'s station rates to the digit, an anchor lifted 12 m into the air
+  gets 0 locks in 1176 throws, the grip-never control locks nothing, and the
+  wide grid (224 paths) gives the narrow grid's shape. Brows, hoods, lumps and
+  ribs make a feature *harder* — fewer standing cells lock it, the wall branch
+  locks from exactly one — but not *different*. The islands prune the basin;
+  they do not fork it. That is the third time the vocabulary question has been
+  measured and the third time the answer has been one motion: anchor type,
+  anchor placement and terrain all decide *where you stand* and *whether it is
+  possible*, never *what your hand does*. The crag ships as a harder level,
+  which is what the numbers say it is. The one regime no rig has surveyed for
+  variety is a throw from a *moving* body mid-swing, which is what the
+  traverse's fast line was built for; every survey this week stood still.
+  `route_variety.gd` is an overnight instrument (2–4 h per level, sharded),
+  not a commit gate; its usage line is in its header.
 
 - **A wall that runs to the floor is not a branch.** An anchor 0.50 m off the
   crag's left wall caught 3 of 216 searched strokes and held none; at 1.20 m

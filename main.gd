@@ -583,7 +583,7 @@ func _ready() -> void:
 		# The crag says only what it is. No feature is named on screen: like
 		# the traverse it teaches by consequence, and the rock around each
 		# anchor is the caption.
-		hud.text = "THE WHIP - THE CRAG   (--level crag)   a gorge, nine drops, the rock shapes every throw\n" + "SPACE / LMB = CLOSE YOUR HAND on the rope. A wrap only takes in the moment you close it,\n" + "and only holds while you hold. OPEN your hand and you leave the anchor that instant.\n" + "Rock cannot be wrapped - only the anchors hold. Green ring = it holds. Amber = it betrays."
+		hud.text = "THE WHIP - THE CRAG   (--level crag)   a gorge, nine drops, the rock decides which throws survive\n" + "SPACE / LMB = CLOSE YOUR HAND on the rope. A wrap only takes in the moment you close it,\n" + "and only holds while you hold. OPEN your hand and you leave the anchor that instant.\n" + "Rock cannot be wrapped - only the anchors hold. Green ring = it holds. Amber = it betrays."
 	canvas.add_child(hud)
 	status = Label.new()
 	status.position = Vector2(16, 146)

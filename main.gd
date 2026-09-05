@@ -3212,13 +3212,28 @@ func _draw() -> void:
 		for q in poly.size():
 			px[q] = poly[q] * PPM
 		draw_colored_polygon(px, bd_col[j])
-	# terrain
+	# terrain. THE BAND IS PAINTED INTO THE ROCK, so the line the rope rests on
+	# is the band's TOP EDGE and not its middle. Centred, half of a 6 px band
+	# (0.05 m) sat above the collision line - and a rope at rest sits at
+	# y = -p_rad, which tapers 0.05 m at the handle to 0.02 m at the tip while
+	# its own drawn width tapers 6 px to 2. So a resting rope was painted 50%
+	# inside the floor at the handle, 70% by mid-chain, and 100% from about
+	# segment 16 to the tip: the thin end of the whip was invisible against the
+	# rock it was lying on. The player reported it exactly - a tail skidding at
+	# 25 m/s read as "momentum running up it parallel THROUGH the floor" - and
+	# it was true of the paint and not of the sim, which never once put a
+	# particle below a surface (measured over the whole corpus: 0 of 2720
+	# substeps per run). Half the stroke along -n; a fillet is convex rock, so
+	# its band moves inward by shrinking the same amount.
+	var half := 3.0 / PPM
 	for s in t_a.size():
-		draw_line(t_a[s] * PPM, t_b[s] * PPM, Color(0.32, 0.35, 0.42), 6.0)
+		var o := -t_n[s] * half
+		draw_line((t_a[s] + o) * PPM, (t_b[s] + o) * PPM,
+			Color(0.32, 0.35, 0.42), 6.0)
 	# and the fillets, as terrain: the same colour and weight, only the
 	# exposed arc, so a rounded lip reads as one continuous edge of rock
 	for j in t_arc_c.size():
-		draw_arc(t_arc_c[j] * PPM, t_arc_r[j] * PPM, t_arc_ang[j].x,
+		draw_arc(t_arc_c[j] * PPM, (t_arc_r[j] - half) * PPM, t_arc_ang[j].x,
 			t_arc_ang[j].y, 12, Color(0.32, 0.35, 0.42), 6.0)
 	# goal flag. Skipped where there is no goal: the lab parks goal_x past its
 	# own right wall, and a flag no one can reach is a promise the level is not

@@ -25,6 +25,13 @@ CRAG** below:
 --path ... -- --level crag
 ```
 
+Any other name is a level drawn in the Godot editor, `res://levels/<name>.tscn`
+- see **Building a level** below:
+
+```
+--path ... -- --level steps
+```
+
 ## Controls
 
 | Input | Action |
@@ -660,6 +667,215 @@ What did not survive measurement:
                                              # photographed through the real _draw (WINDOWED)
 ```
 
+## Building a level
+
+The Godot editor is the level builder. It already has a polyline with a drag
+handle on every point (`Line2D`), a point with a crosshair (`Marker2D`), a
+filled shape (`Polygon2D`), grid snapping, undo and a zoom range; what was
+missing was a bridge from a scene you draw to the arrays the sim runs on.
+`main.gd` has that bridge now (the section headed **SCENE LEVELS**), and the
+test of it is the one that matters: open a level in the editor, drag a beam
+2 m to the right, save, play it - no code.
+
+```
+--path ... -- --level steps          # res://levels/steps.tscn
+--path ... -- --level crag.tscn      # the crag, exported to a scene (see below)
+```
+
+`lab` and `crag` always mean the builds in `main.gd`; any other name is
+`res://levels/<name>.tscn`, and a name with no scene is refused, not silently
+played as the traverse. Each scene level owns its own save slot,
+`user://run_<name>.save`.
+
+### Drawing one
+
+Duplicate `levels/steps.tscn` (three drops, four anchors, one island - the
+smallest complete example) or `levels/crag.tscn`, rename it, open it in the
+editor. The scene tree is the schema; node **names** give the roles, node
+**types** give the geometry, and every knob is an exported property of one of
+the small scripts in `levels/`, so it is typed, has a default, and lives in the
+inspector:
+
+| node | what it is | knobs (inspector) |
+|---|---|---|
+| `Level` (Node2D, root) | the level | `whip_level.gd`: `fillet_ground` 0.35, `fillet_island` 0.10 (m), `hud` (the caption block; empty = a title from the file name) |
+| `Ground` (Line2D) | THE one open chain of rock: down the left wall, along the floors, down each face, up the far seal. **The line is the collision** | `whip_terrain.gd`: `fillet` −1 = the level default, 0 = sharp, > 0 = this radius |
+| `Islands/…` (Line2D, `closed`) | closed loops of rock: lumps, brows, shelves, hoods, ribs. Same script | as Ground; a `Marker2D` child with `whip_fillet.gd` dragged onto one vertex gives that corner its own radius |
+| `Anchors/…` (Marker2D) | one per anchor, in index order | `whip_anchor.gd`: `radius` (m, default 0.12), `jam`, `caption`; the editor draws the beam at size, the jam's collar, the caption |
+| `Spawn` (Marker2D) | where the body starts | required |
+| `Goal` (Marker2D) | the flag | optional: absent = a bench with no finish, like the lab |
+| `Camera/…` (Line2D, 2 points) | optional camera volumes: the two points on a tier's floor, x0 to x1 | `whip_camvol.gd`: `zoom`. **Leave it out** and the table is derived from the floors - see below |
+| `Backdrop/…` (Polygon2D) | paint, drawn in order under the terrain | `color` |
+
+**Units are pixels at 60 px/m** - the scale `_draw` renders at - because the
+editor's grid, zoom range and gizmos assume pixel-sized scenes (a 60 m level
+authored in metres is 60 units wide, edited at 6000% zoom). The loader divides
+by 60 and then **quantises every coordinate to 0.01 m** (radii to 0.001 m).
+That is what makes a drag exact: one pixel is 0.016667 m, an odd number, and a
+beam dragged 120 px moves exactly 2.00 m rather than 1.9999998 m of float
+noise. Set the editor's grid step to **6 px = 0.1 m** (Configure Snap; primary
+line every 10 = 1 m) and everything you place is on the metre grid the shipped
+levels are written on. The `.tscn` text itself is not the weak link - Godot 4.7
+writes reals with shortest-round-trip digits, and `level_fidelity.gd` F4 checks
+every value comes back bit-identical - the grid is for the editor's sake.
+
+**The winding rule: the air is on your LEFT as you walk the line.** `t_n` is
+derived from segment direction, so a polyline drawn the other way round would
+push the rope *into* the rock and park it under the floor. You do not have to
+get this right: the loader orients every polyline itself (an island is wound
+solid-inside, the ground is closed over the sky and wound air-inside), reverses
+one that was drawn backwards, and says so on the console. In the editor the
+terrain script draws a short pip on the air side of every segment *as the
+loader will wind it* - if a pip points into what you meant as rock, the shape
+is not what you think it is. The gate then proves every normal by the
+independent air-region method (`crag_gate` C4's, which scores 0 on a reversed
+walk), so the loader's rule and the check cannot share a mistake.
+
+**Corners, not tangent points.** The scene stores the corner and the radius; the
+loader cuts the fillet with `_fillet` exactly as `_build_crag` does. A tangent
+point such as −1.46 + 0.10 is not on the 0.01 grid in float32 and would not
+survive a round trip (F4 counts 24 of the crag's 300 post-fillet endpoint
+coordinates off the grid), and you move corners, not tangent points. Concave
+corners are refused by `_fillet` as always, so "fillet every vertex at 0.35"
+on the ground rounds exactly the lips.
+
+**The camera table is derived** from the floors unless you author one: one
+volume per horizontal run of the ground ≥ 2 m, each ending **1.0 m before the
+lip** (so with `CAM_HYST` 1.5 the shelf steps when the body is 0.5 m past it),
+floor y as the shelf, zoom 1.0. That is the rule `CAM_VOLS` and `CRAG_VOLS`
+were written to, and `level_fidelity.gd` F3 checks the derivation reproduces
+both tables element for element - which is why the crag scene carries no
+Camera node. Author one only when a tier needs its own zoom, and read the
+camera section's budget first.
+
+### The contract, in numbers you must respect
+
+All measured, none derived by arithmetic; the probes are named in **Probes**
+above. `level_gate.gd` prints where every anchor of your level stands against
+them.
+
+- **An anchor is catchable from a standstill only ≤ ~2.4 m above the floor you
+  throw from.** Every shipped anchor sits at 2.2 m. Higher is a swing-apex
+  catch (the traverse's fast line, 4.5 m) or luck (the lab's first JAM HIGH at
+  2.9 m: 3 winning strokes in 108).
+- **An anchor is launchable only with > ~3.2 m of air under the arc** - you
+  hang tether + arm + body below it. Those two contradict each other on one
+  floor, which is why every level is a step: a lip, an anchor 1.4 m past it,
+  a 3.0 m drop. 2.2 m over the tier you throw from, 5.2 m over the one you
+  swing into.
+- **The lash gait cannot climb 20°** (0.42 m/s on the flat, nothing on a
+  slope), so every tier is flat, every drop faces along the route, and every
+  island top a body can land on is flat and can be crawled off. Falling costs
+  ground and time; it must never cost the run. The gate walks the whole level
+  with the hand open to prove it (W).
+- **6.5 m between anchors keeps them out of each other's reach** (the rope
+  lives inside a 6.40 m circle round the body). The lab's rule, for learning
+  one anchor at a time; the crag packs its home tier to 4.6 m on purpose. The
+  gate reports the nearest neighbour of every anchor and flags anything under
+  6.5 m, informationally.
+- **Rock over a floor a body crawls on must clear 1.45 m**: the gait carries
+  the hand 1.21 m over the floor, and a lump whose underside was 0.95 m up
+  stopped the crawl dead.
+- **A corner cannot be an anchor**, at any radius (a rope over a 90° lip
+  touches 1.57 rad of it, against `th_part` 3.4), and a fillet is a corner the
+  rope slides off instead of snagging. Only the Marker2Ds under `Anchors` can
+  hold. The gate checks no fillet overlaps an anchor (A).
+
+**The art rule: the Line2D is the collision; anything painted behind it is free
+and cannot move it.** `Backdrop` polygons are read by `_draw` and nothing else
+- not `_collide`, not the wraps, not the camera, not the fingerprint. Draw the
+cliff, the pillar under a lump, the curtain over a rib, as paint; the rope
+meets the line.
+
+### The one command
+
+```
+"C:\Users\judeb\Downloads\Godot_v4.7.2-stable_win64.exe\Godot_v4.7.2-stable_win64_console.exe" --headless --path "C:\Users\judeb\Downloads\the-whip" -s res://tests/level_gate.gd -- level=steps
+```
+
+`level=<name>`, `level=<x>.tscn`, or `level=lab` / `level=crag` for the
+hardcoded ones. **F** the fingerprint is not the traverse's (the tapes would
+replay into it), the lab's or the crag's · **T** every committed tape still
+names the shipped level and none names yours · **N** every normal into the air,
+reversed winding scores 0 · **A** an arc is never an anchor · **D** the rescue
+depth is finite behind every island face · **S** your own save slot, a
+traverse save refused, your own accepted · **W** walkable with the hand open,
+spawn to flag · **R** every anchor **locks** from a searched throw after a
+crawl-in (`crag_gate` C6's search; minutes, and `quick` skips it). It also
+prints the camera table it derived and the contract table above. The same
+checks are what `lab_gate` and `crag_gate` run - they call the same code,
+`tests/level_lib.gd` - plus their own.
+
+Two more tools. `tests/level_export.gd -- level=crag out=res://levels/x.tscn`
+writes a hardcoded level out in the schema, and `tests/level_fidelity.gd` is
+the standing proof that a scene is the same world as the code (below).
+`crag_shots.gd -- level=<name>` and `crag_view.gd -- level=<name>` photograph
+searched catches on any level.
+
+### The worked example: the crag as a scene
+
+`levels/crag.tscn` is the crag of `_build_crag`, exported by `level_export.gd`:
+22 ground points, 12 islands named for their features (`D4_lump`, `D2_hood`,
+`D8_rib`…), 12 anchors named for the README's table (`H0_HORN` …
+`D8_BRANCH`), 29 backdrop polygons, `fillet_ground` 0.35, `fillet_island` 0.10,
+no per-vertex overrides and no Camera node. Loaded back through the scene
+loader it fingerprints **1132405890178884573 - the hardcoded crag's own
+number** - and `level_fidelity.gd` F1 requires every element of every array to
+be bit-identical: `t_a`, `t_b`, `t_n`, the boxes, the rescue depths, the 60
+arcs' centres, radii and exposed angles, the 12 anchors, spawn, goal,
+`world_bottom`, the 10 camera volumes and all 29 polygons. It is; and the
+exporter round-trips the lab the same way (jam flags, captions and its
+authored 5-volume table included). So `--level crag.tscn` is the crag: same
+fingerprint, same slot (`user://run_crag.save`), a run started in one resumes
+in the other. Open it in the editor to see how a horn, a knob, a window and a
+branch are made of rock around an ordinary anchor.
+
+The traverse stays in code. Its tapes and the player's run are keyed to its
+fingerprint, which hashes segments *in order*, and its left wall is appended
+after the floor polyline; an export would put the wall first (one chain) and
+move the number. Nothing is lost by that: it is the level that must not move.
+
+### The second example: THE STEPS
+
+`levels/steps.tscn`, drawn by hand in the schema: a home tier, three 3.0 m
+drops, four anchors of four kinds - **BEAM** (r 0.22 at 2.2 m, the school's
+first beam), **JAM** (r 0.11, the jam flag, the door over the first lip),
+**KNOB** (r 0.14 on a lump 0.60 m under it - D4's rock, moved), **THIN BEAM**
+(r 0.11, a traverse door) - the flag on the bottom tier. Fingerprint
+3144857459313072037, slot `user://run_steps.save`, 13 segments, 7 arcs (three
+lips at 0.35, four lump corners at 0.10), a derived table of four volumes, and
+it walks spawn to flag with the hand open in 70.5 s. The gate's R, every
+anchor locked from a crawled-to standing spot (2 m 40 s for the whole gate):
+
+| anchor | stroke | thrown from | tether | holding on 100 ticks |
+|---|---|---|---|---|
+| A0 BEAM | 67 | 2.4 m from x −4.42 on the floor at y 0 | 1.83 m | feet on the home floor |
+| A1 JAM | 8 | 2.0 m from x 5.42 on the floor at y 0 (pull) | 1.54 m | hauled off the lip |
+| A2 KNOB | 31 | 2.0 m from x 13.41 on the floor at y 3 | 1.60 m | **betrayed during the haul** - the knob does on the steps what D4 does on the crag: the lump is where the tail would cross itself |
+| A3 THIN BEAM | 19 | 2.0 m from x 21.43 on the floor at y 6 | 1.81 m | hangs in air |
+
+Both levels photographed through the real `_draw` with `crag_shots.gd` /
+`crag_view.gd -- level=…`: the crag scene's D0 HORN green on stroke 19 (as the
+hardcoded crag's table says), the steps' KNOB green at the catch (θ 7.26 rad)
+and amber, paying out, 100 ticks later (θ 3.16).
+
+### What you cannot yet do from the editor
+
+- See the physics. The editor draws the rock, the beams at size and the air
+  pips; whether a throw can reach a beam is what `level_gate` R measures, and
+  only it. Run the gate.
+- Make a new *kind* of anchor. An anchor is a radius, a jam flag and a caption;
+  a horn, a knob, a window are rock placed around one. That is the finding of
+  the crag, not a limitation of the schema.
+- Edit the traverse (above), or re-record a tape: the tapes are the
+  traverse's, and a scene level has none. `--record` works on any level.
+- Move a vertex without moving the fingerprint. Every edit is a new world:
+  the run under `user://run_<name>.save` is refused on the next boot and the
+  next autosave overwrites it. That is the same rule the hardcoded levels live
+  under; the editor just makes edits cheap.
+- Keep the `.uid` files out of the tree: the editor generates one beside each
+  script in `levels/` on first open. Commit them.
+
 ## Test gates, and the instruments that are not gates
 
 ```
@@ -699,6 +915,8 @@ must pass before a commit:
 | `aud_gate.gd` | `PASS` | A1–A6, see Sound |
 | `lab_gate.gd` | `PASS  lab gates L1-L7` | the bench exists without touching the traverse |
 | `crag_gate.gd` | `PASS  crag gates C1-C8` | the crag exists without touching either, its rock is wound the right way, its arcs cannot hold, every feature is reached and the whole thing is walked (C6 takes minutes; `-- quick` skips it) |
+| `level_fidelity.gd` | `PASS  level fidelity F1-F5` | `levels/crag.tscn` loaded through the scene loader is the hardcoded crag to the bit (fingerprint 1132405890178884573, every array), the exporter round-trips the crag and the lab, the derived camera table is the authored one, and the loader refuses bad scenes by name |
+| `level_gate.gd -- level=<name>` | `PASS  level gate <name>: F T N A D S W R` | any level, drawn or hardcoded: see Building a level (R takes minutes; `quick` skips it) |
 | `mark_rt.gd` | `PASS  mark_rt` | the recorder and its marker do not lie — and no test writes the player's slot |
 | `mark_kind.gd` | `PASS  mark_kind` | F and G latch different kinds, and only under `--record` |
 

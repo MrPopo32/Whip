@@ -583,6 +583,13 @@ func _ready() -> void:
 		# itself sets level_id directly and never reaches this line.
 		level_id = _cmdline_level()
 		setup_sim()
+	if level_err != "":
+		# A scene the loader refused is not played and, above all, not saved:
+		# _boot_session would turn save_enabled on and the next autosave
+		# would write an empty world into user://run_<name>.save.
+		print("Nothing to play. Fix the scene and run tests/level_gate.gd -- level=%s" % level_id)
+		get_tree().quit(1)
+		return
 	_boot_session()   # resume the run in progress, or record / replay a tape
 
 	cam = Camera2D.new()
@@ -616,6 +623,10 @@ func _ready() -> void:
 		# the traverse it teaches by consequence, and the rock around each
 		# anchor is the caption.
 		hud.text = "THE WHIP - THE CRAG   (--level crag)   a gorge, nine drops, the rock decides which throws survive\n" + "SPACE / LMB = CLOSE YOUR HAND on the rope. A wrap only takes in the moment you close it,\n" + "and only holds while you hold. OPEN your hand and you leave the anchor that instant.\n" + "Rock cannot be wrapped - only the anchors hold. Green ring = it holds. Amber = it betrays."
+	elif level_id != "":
+		# A scene level says what its author wrote in the root's hud field,
+		# or, if he wrote nothing, its name and the one rule every level shares.
+		hud.text = level_hud if level_hud != "" else "THE WHIP - %s   (--level %s)\n" % [level_title(), level_id] + "SPACE / LMB = CLOSE YOUR HAND on the rope. A wrap only takes in the moment you close it,\n" + "and only holds while you hold. OPEN your hand and you leave the anchor that instant.\n" + "Green ring = it holds. Amber = it betrays."
 	canvas.add_child(hud)
 	status = Label.new()
 	status.position = Vector2(16, 146)
@@ -710,6 +721,15 @@ func setup_sim() -> void:
 		save_path = SAVE_PATH_LAB
 	elif level_id == "crag":
 		save_path = SAVE_PATH_CRAG
+	elif level_id != "":
+		# A SCENE LEVEL OWNS ITS SLOT BY NAME: res://levels/steps.tscn saves to
+		# user://run_steps.save. The name, not the fingerprint, because a slot
+		# keyed to the fingerprint would move every time the developer nudged
+		# a vertex and strand the run he was on under a name nothing reads.
+		# The same name is the same slot: --level crag.tscn (the crag exported
+		# to a scene) shares run_crag.save with the hardcoded crag, and that is
+		# right, because tests/level_fidelity.gd proves they are one world.
+		save_path = "user://run_%s.save" % level_name(level_id)
 	_reset()
 	_av_size()
 
@@ -726,10 +746,19 @@ func _build_level() -> void:
 	t_arc_c.clear(); t_arc_r.clear(); t_arc_ang.clear()
 	bd_poly.clear(); bd_col.clear()
 	cam_vols = CAM_VOLS
+	level_err = ""
+	level_hud = ""
 	if level_id == "lab":
 		_build_lab()
 	elif level_id == "crag":
 		_build_crag()
+	elif level_id != "":
+		# ANY OTHER NAME IS A SCENE the developer drew in the editor: see
+		# "SCENE LEVELS" below _bd for the schema and the loader. The three
+		# built-in names always win, so --level crag is this file's crag even
+		# after it has been exported to res://levels/crag.tscn; that scene is
+		# played as --level crag.tscn.
+		_build_scene(level_scene_path(level_id))
 	else:
 		_build_traverse()
 
@@ -945,6 +974,17 @@ func _add_anchor(p: Vector2, r: float, jam: int, nm: String) -> void:
 	a_paytick.append(0)
 	a_prun.append(0)
 	a_clear.append(0)
+
+func _clear_anchor_tables() -> void:
+	# The other place that knows the width: every table _add_anchor appends
+	# to, emptied. Only a refused scene level needs it (a refused level must
+	# leave nothing to play - measured: the first version left its anchors
+	# standing in an empty world), but it lives beside _add_anchor so the two
+	# lists cannot drift apart.
+	for t: Variant in [a_pos, a_r, a_jam, a_name, a_theta, a_lockidx, a_freelen,
+			a_half, a_pinidx, a_pinpt, a_locked, a_armed, a_pin0, a_pend, a_ength,
+			a_minth, a_wlo, a_whi, a_paytick, a_prun, a_clear]:
+		t.resize(0)
 
 # --------------------------------------------------------------- THE LAB --
 # A BENCH, NOT A TRAVERSE. --level lab. One flat floor you can walk end to
@@ -1354,6 +1394,413 @@ func _bd(poly: PackedVector2Array, col: Color) -> void:
 	bd_poly.append(poly)
 	bd_col.append(col)
 
+# ---------------------------------------------------------- SCENE LEVELS --
+# THE GODOT EDITOR IS THE LEVEL BUILDER. Line2D is a polyline with a drag
+# handle on every point, Marker2D is a point with a crosshair, Polygon2D is a
+# filled shape, and the editor already has grid snapping, undo and a zoom
+# range; what was missing was a bridge from a scene the developer draws to the
+# arrays the sim runs on. This is that bridge. --level <name> reads
+# res://levels/<name>.tscn into t_a/t_b, the arcs, the anchors, spawn, goal,
+# the camera table and the backdrop - the arrays _build_traverse, _build_lab
+# and _build_crag fill by hand - THROUGH THE SAME FUNCTIONS (_fillet,
+# _add_anchor, _finish_terrain), so a scene level is not a second code path
+# with its own defects. tests/level_fidelity.gd is the proof: the crag exported
+# to res://levels/crag.tscn by tests/level_export.gd and loaded back here
+# fingerprints 1132405890178884573, the hardcoded crag's own number, with every
+# element of every array bit-identical. tests/level_gate.gd -- level=<name>
+# certifies what he drew.
+#
+# THE SCHEMA. Node NAMES give the roles, node TYPES give the geometry, and every
+# knob is an exported property of one of the small scripts in res://levels/, so
+# it is typed, has a default, and is edited in the inspector (a node with no
+# script gets the defaults named here). Anything else in the scene is ignored.
+#
+#   Level (Node2D)          levels/whip_level.gd: fillet_ground 0.35 and
+#                           fillet_island 0.10 (m, the per-level defaults),
+#                           hud (the caption block drawn top-left; empty =
+#                           a title made from the file name)
+#     Ground (Line2D)       THE one open chain of rock: down the left wall,
+#                           along the floors, down each face, up the far seal.
+#                           levels/whip_terrain.gd: fillet -1 = the level
+#                           default, 0 = sharp, > 0 = this radius (m)
+#       <Marker2D> ...      optional, levels/whip_fillet.gd: one corner's own
+#                           radius, dragged onto that vertex (within 0.02 m)
+#     Islands (Node2D)      zero or more CLOSED loops of rock, Line2D children
+#       <Line2D> ...        with closed = true: lumps, brows, shelves, hoods,
+#                           ribs. Same script and fillet rule as Ground
+#     Anchors (Node2D)      one Marker2D child per anchor, in the order they
+#       <Marker2D> ...      are indexed: levels/whip_anchor.gd gives radius
+#                           (m, default 0.12), jam (bool) and caption
+#     Spawn (Marker2D)      where the body starts. Required
+#     Goal (Marker2D)       the flag. Absent = a bench with no finish (the
+#                           lab's goal_x = 999)
+#     Camera (Node2D)       optional. Absent = derived from the floors (below)
+#       <Line2D> ...        one volume each: exactly 2 points on the tier's
+#                           floor, x0 to x1; levels/whip_camvol.gd gives zoom
+#     Backdrop (Node2D)     optional paint: Polygon2D children, filled with
+#       <Polygon2D> ...     their own color, drawn in order under the terrain
+#                           and read by nothing else (see bd_poly)
+#
+# PIXELS, NOT METRES, AT PPM = 60 PX/M. The editor's grid, its zoom range,
+# Line2D.width and every gizmo assume pixel-sized scenes; a 60 m level authored
+# in metres is 60 units wide and would be edited at 6000% zoom with the grid
+# unusable. So the scene is drawn at the scale _draw renders it, the loader
+# divides by PPM, and then QUANTISES every coordinate to LEVEL_GRID = 0.01 m
+# (anchor radii to 0.001 m). The quantisation is what makes an editor drag
+# exact: one pixel is 0.016667 m, an odd number in metres, and a beam dragged
+# 120 px moves exactly 2.00 m rather than 1.9999998 m of float noise. It is
+# also why the crag round-trips: every one of its hand-typed coordinates has two
+# decimals, and roundf(px / PPM * 100) / 100 lands on the same float32 the
+# GDScript literal did - measured 10 of 10 on the crag's own values. The .tscn
+# text itself was measured as well, and it is not the weak link: Godot 4.7
+# writes reals with shortest-round-trip digits (0.33333334, 84.85281), and 13 of
+# 13 raw float32 values came back bit-identical. The grid is for the editor's
+# sake, not the file's.
+#
+# THE SCENE CARRIES VERTICES, NOT SEGMENTS. A fillet's tangent points and centre
+# are computed here by _fillet from the corner and the radius, exactly as
+# _build_crag computes them, and not stored: a tangent point such as -1.46 + 0.10
+# is not on the 0.01 grid in float32 and would not survive a round trip, and
+# more to the point the developer moves corners, not tangent points. All
+# segments are appended first and the fillets applied afterwards in node order
+# (Ground, then each island, each vertex in turn) - the order _build_crag uses,
+# which is what keeps t_arc_* in the same order and the fingerprint the same.
+#
+# WINDING IS DECIDED HERE, NOT BY THE DEVELOPER. t_n comes from segment
+# direction (normalize(ab.y, -ab.x) must point into the air; see t_n), so the
+# order of a polyline's points matters, and it is the easiest thing in the
+# editor to get backwards - and the consequence is a rope parked under the
+# floor. The loader orients every polyline itself: an island is wound with the
+# solid inside (clockwise on screen, a positive shoelace sum in y-down
+# coordinates - the sign _crag_rect produces), and the ground is closed over the
+# sky and wound with the air inside (the same sum, negative). A polyline drawn
+# the other way round is reversed, once, and said so on the console.
+# tests/level_gate.gd N then proves every normal by the independent air-region
+# method (crag_gate C4, which scores 0 on a reversed walk), so the loader's rule
+# and the gate's check cannot share a mistake.
+#
+# THE DEFAULT CAMERA TABLE is the rule CAM_VOLS and CRAG_VOLS were written to,
+# read back off them: one volume per FLOOR of the ground chain (a horizontal run
+# of at least LEVEL_FLOOR_MIN = 2 m walked left to right), each ending at that
+# floor's lip MINUS 1.0 m - so with CAM_HYST 1.5 the shelf steps down when the
+# body is 0.5 m past the lip, which is what both tables do - the first starting
+# at the leftmost rock, the last ending at the rightmost, the floor's y as the
+# shelf and zoom 1.0. On both shipped levels the derivation reproduces the
+# hand-written table element for element (tests/level_fidelity.gd F3), which is
+# how a scene level gets the committed camera without a table to maintain.
+const LEVEL_DIR := "res://levels/"
+const LEVEL_GRID := 0.01              # m: every authored coordinate lands here
+const LEVEL_RGRID := 0.001            # m: anchor radii
+const LEVEL_FLOOR_MIN := 2.0          # m: a horizontal run this long is a floor
+                                      # the camera gets a volume for
+const LEVEL_FILLET_GROUND := 0.35     # m: the crag's lips
+const LEVEL_FILLET_ISLAND := 0.10     # m: the crag's island corners
+const LEVEL_ANCHOR_R := 0.12          # m: the door-beam radius
+const LEVEL_SNAP := 0.02              # m: a fillet marker must be this close to
+                                      # the vertex it overrides
+# Neither of these is simulation state: one is why the scene was refused, the
+# other is its caption. Both in SNAP_SKIP, or every tape and save is refused.
+var level_err := ""
+var level_hud := ""
+
+static func level_is_builtin(id: String) -> bool:
+	return id == "" or id == "lab" or id == "crag"
+
+static func level_scene_path(id: String) -> String:
+	# "steps" -> res://levels/steps.tscn. "crag.tscn" -> res://levels/crag.tscn,
+	# which is how a scene whose name a built-in level owns is played.
+	# "levels/x.tscn", res://, user:// or an absolute path -> that file.
+	if id.ends_with(".tscn"):
+		return _res(id) if id.contains("/") else LEVEL_DIR + id
+	return LEVEL_DIR + id + ".tscn"
+
+static func level_name(id: String) -> String:
+	# The slot's and the title's name: the file's basename, letters, digits,
+	# '_' and '-' only, so a path can never write a save somewhere odd.
+	var n := id.get_file().get_basename() if id.ends_with(".tscn") else id
+	var out := ""
+	for c in n:
+		if (c >= "a" and c <= "z") or (c >= "A" and c <= "Z") \
+				or (c >= "0" and c <= "9") or c == "_" or c == "-":
+			out += c
+	return out if out != "" else "level"
+
+func level_title() -> String:
+	return "TRAVERSE" if level_id == "" else level_name(level_id).to_upper()
+
+func _level_refuse(what: String) -> void:
+	# The first refusal is the one that names the mistake; keep it.
+	if level_err == "":
+		level_err = "LEVEL REFUSED: " + what
+		push_error(level_err)
+		print(level_err)
+
+func _build_scene(path: String) -> void:
+	if not ResourceLoader.exists(path, "PackedScene"):
+		_level_refuse("%s does not exist (a scene level lives in res://levels/)" % path)
+	else:
+		var ps: PackedScene = ResourceLoader.load(path, "PackedScene")
+		if ps == null:
+			_level_refuse("%s could not be loaded as a PackedScene" % path)
+		else:
+			# DETACHED. new_sim() never enters the tree and neither does the
+			# level: the scene is instantiated as a free node graph, read, and
+			# freed. Nothing in it gets _ready, _process or a draw call, so a
+			# headless probe and the windowed game read the same numbers.
+			var root: Node = ps.instantiate()
+			_level_read(root, path.get_file())
+			root.free()
+	if level_err != "":
+		# A refused level is not played and not saved: _ready quits on
+		# level_err, and a harness reads it. Leave nothing half-built.
+		t_a.clear(); t_b.clear()
+		t_arc_c.clear(); t_arc_r.clear(); t_arc_ang.clear()
+		bd_poly.clear(); bd_col.clear()
+		_clear_anchor_tables()
+		cam_vols = CAM_VOLS
+		goal_x = 999.0
+		goal_y = 0.0
+	_finish_terrain()
+
+func _level_read(root: Node, fname: String) -> void:
+	var fg := float(_lv_get(root, "fillet_ground", LEVEL_FILLET_GROUND))
+	var fi := float(_lv_get(root, "fillet_island", LEVEL_FILLET_ISLAND))
+	level_hud = String(_lv_get(root, "hud", ""))
+	# ---- the rock: Ground, then every island, every segment appended before
+	# any fillet is cut (see the order note above)
+	var loops: Array = []                 # [{node, pts, closed, role}]
+	var ground := root.get_node_or_null("Ground")
+	if ground == null or not (ground is Line2D):
+		_level_refuse("%s has no Line2D named Ground" % fname)
+		return
+	var gp := _lv_points(ground as Line2D, root)
+	if gp.size() < 2:
+		_level_refuse("Ground has %d point(s); a chain needs at least 2" % gp.size())
+		return
+	var dup := _lv_dup(gp, false)
+	if dup >= 0:
+		_level_refuse("Ground: points %d and %d are the same place (%.2f, %.2f) - a zero-length segment has no normal"
+			% [dup, dup + 1, gp[dup].x, gp[dup].y])
+		return
+	if _lv_wound_wrong(gp, false):
+		gp.reverse()
+		print("level: Ground was drawn with the air on its right; reversed so the normals point into the sky")
+	loops.append({"node": ground, "pts": gp, "closed": false, "role": fg})
+	var isl := root.get_node_or_null("Islands")
+	if isl != null:
+		for c in isl.get_children():
+			if not (c is Line2D):
+				continue
+			var p := _lv_points(c as Line2D, root)
+			# a loop closed by hand (last point on the first) is closed once
+			if p.size() >= 2 and p[p.size() - 1] == p[0]:
+				p.remove_at(p.size() - 1)
+			if p.size() < 3:
+				_level_refuse("Islands/%s has %d point(s); a loop needs at least 3" % [c.name, p.size()])
+				return
+			dup = _lv_dup(p, true)
+			if dup >= 0:
+				_level_refuse("Islands/%s: points %d and %d are the same place (%.2f, %.2f)"
+					% [c.name, dup, (dup + 1) % p.size(), p[dup].x, p[dup].y])
+				return
+			if _lv_wound_wrong(p, true):
+				p.reverse()
+				print("level: Islands/%s was drawn with the air inside; reversed so the rock is inside" % c.name)
+			loops.append({"node": c, "pts": p, "closed": true, "role": fi})
+	for lp: Dictionary in loops:
+		var p: PackedVector2Array = lp["pts"]
+		var n: int = p.size() - (0 if bool(lp["closed"]) else 1)
+		for i in n:
+			t_a.append(p[i])
+			t_b.append(p[(i + 1) % p.size()])
+	for lp: Dictionary in loops:
+		var node: Node = lp["node"]
+		var p: PackedVector2Array = lp["pts"]
+		var r_node := float(_lv_get(node, "fillet", -1.0))
+		if r_node < 0.0:
+			r_node = float(lp["role"])
+		var over := _lv_overrides(node, root, p)
+		if level_err != "":
+			return
+		for i in p.size():
+			if not bool(lp["closed"]) and (i == 0 or i == p.size() - 1):
+				continue                  # an end of the chain is not a corner
+			var r := float(over.get(i, r_node))
+			if r > 0.0:
+				_fillet(p[i], _lv_q(r, LEVEL_RGRID))
+	# ---- anchors, through the one function that knows the table width
+	var an := root.get_node_or_null("Anchors")
+	if an != null:
+		for c in an.get_children():
+			if not (c is Node2D):
+				continue
+			var r := _lv_q(float(_lv_get(c, "radius", LEVEL_ANCHOR_R)), LEVEL_RGRID)
+			if r <= 0.0:
+				_level_refuse("Anchors/%s has radius %.3f m" % [c.name, r])
+				return
+			_add_anchor(_lv_point(c as Node2D, root), r,
+				1 if bool(_lv_get(c, "jam", false)) else 0,
+				String(_lv_get(c, "caption", "")))
+	# ---- spawn and goal
+	var sp := root.get_node_or_null("Spawn")
+	if sp == null or not (sp is Node2D):
+		_level_refuse("%s has no Marker2D named Spawn" % fname)
+		return
+	spawn = _lv_point(sp as Node2D, root)
+	var gl := root.get_node_or_null("Goal")
+	if gl != null and gl is Node2D:
+		var g := _lv_point(gl as Node2D, root)
+		goal_x = g.x
+		goal_y = g.y
+	else:
+		goal_x = 999.0
+		goal_y = 0.0
+	# ---- the camera table: authored volumes if there are any, else derived
+	var vols: Array = []
+	var camn := root.get_node_or_null("Camera")
+	if camn != null:
+		for c in camn.get_children():
+			if not (c is Line2D):
+				continue
+			var p := _lv_points(c as Line2D, root)
+			if p.size() != 2:
+				_level_refuse("Camera/%s has %d points; a volume is 2, (x0, floor) and (x1, floor)"
+					% [c.name, p.size()])
+				return
+			vols.append([minf(p[0].x, p[1].x), maxf(p[0].x, p[1].x), p[0].y,
+				float(_lv_get(c, "zoom", 1.0))])
+		vols.sort_custom(func(a: Array, b: Array) -> bool: return float(a[0]) < float(b[0]))
+	if vols.is_empty():
+		vols = level_default_vols(gp)
+	cam_vols = vols
+	# ---- the backdrop: paint, in tree order
+	var bdn := root.get_node_or_null("Backdrop")
+	if bdn != null:
+		for c in bdn.get_children():
+			if not (c is Polygon2D):
+				continue
+			var poly := _lv_polygon(c as Polygon2D, root)
+			if poly.size() >= 3:
+				_bd(poly, (c as Polygon2D).color)
+
+static func level_default_vols(g: PackedVector2Array) -> Array:
+	# One volume per floor, boundary at the lip - 1.0 m; see the section note.
+	var lo := 1e9
+	var hi := -1e9
+	for p in g:
+		lo = minf(lo, p.x)
+		hi = maxf(hi, p.x)
+	var floors: Array = []                # [lip x, floor y]
+	for i in range(g.size() - 1):
+		var a := g[i]
+		var b := g[i + 1]
+		if absf(b.y - a.y) < 0.005 and b.x - a.x >= LEVEL_FLOOR_MIN:
+			floors.append([b.x, a.y])
+	if floors.is_empty():
+		return [[lo, hi, g[0].y if g.size() > 0 else 0.0, 1.0]]
+	var vols: Array = []
+	var x0 := lo
+	for i in floors.size():
+		var x1: float = hi if i == floors.size() - 1 else float(floors[i][0]) - 1.0
+		vols.append([x0, x1, float(floors[i][1]), 1.0])
+		x0 = x1
+	return vols
+
+static func _lv_get(n: Object, prop: String, dflt: Variant) -> Variant:
+	# an exported property if the node carries the script, else the default
+	var v: Variant = n.get(prop)
+	return dflt if v == null else v
+
+static func _lv_q(v: float, step: float) -> float:
+	var inv := roundf(1.0 / step)
+	return roundf(v * inv) / inv
+
+static func _lv_qv(v: Vector2) -> Vector2:
+	return Vector2(_lv_q(v.x, LEVEL_GRID), _lv_q(v.y, LEVEL_GRID))
+
+static func _lv_xform(n: Node, root: Node) -> Transform2D:
+	# The node's own transform composed with every Node2D above it, root
+	# included, so moving a group moves what is in it - what the editor shows
+	# is what is loaded.
+	var xf := Transform2D.IDENTITY
+	var c: Node = n
+	while c != null:
+		if c is Node2D:
+			xf = (c as Node2D).transform * xf
+		if c == root:
+			break
+		c = c.get_parent()
+	return xf
+
+static func _lv_points(n: Line2D, root: Node) -> PackedVector2Array:
+	var xf := _lv_xform(n, root)
+	var out := PackedVector2Array()
+	for p in n.points:
+		out.append(_lv_qv((xf * p) / PPM))
+	return out
+
+static func _lv_polygon(n: Polygon2D, root: Node) -> PackedVector2Array:
+	var xf := _lv_xform(n, root)
+	var out := PackedVector2Array()
+	for p in n.polygon:
+		out.append(_lv_qv((xf * (p + n.offset)) / PPM))
+	return out
+
+static func _lv_point(n: Node2D, root: Node) -> Vector2:
+	return _lv_qv(_lv_xform(n, root).origin / PPM)
+
+static func _lv_dup(p: PackedVector2Array, closed: bool) -> int:
+	# the first index whose next point (round the loop, if closed) is itself
+	var n := p.size() - (0 if closed else 1)
+	for i in n:
+		if p[i] == p[(i + 1) % p.size()]:
+			return i
+	return -1
+
+static func _lv_shoelace(p: PackedVector2Array) -> float:
+	var s := 0.0
+	for i in p.size():
+		var a := p[i]
+		var b := p[(i + 1) % p.size()]
+		s += a.x * b.y - b.x * a.y
+	return s
+
+static func _lv_wound_wrong(p: PackedVector2Array, closed: bool) -> bool:
+	# Solid inside a loop is a positive sum in y-down coordinates (the unit
+	# square (0,0) (1,0) (1,1) (0,1) - _crag_rect's order - sums to +2). The
+	# ground is closed over the sky, so the region it encloses is AIR and the
+	# sum has to be negative.
+	if closed:
+		return _lv_shoelace(p) < 0.0
+	var q := p.duplicate()
+	q.append(Vector2(p[p.size() - 1].x, -10000.0))
+	q.append(Vector2(p[0].x, -10000.0))
+	return _lv_shoelace(q) > 0.0
+
+func _lv_overrides(node: Node, root: Node, p: PackedVector2Array) -> Dictionary:
+	# Marker2D children of a terrain node, each sitting on one of its vertices,
+	# each carrying that corner's own fillet radius.
+	var out := {}
+	for c in node.get_children():
+		if not (c is Node2D) or c is Line2D:
+			continue
+		var q := _lv_point(c as Node2D, root)
+		var best := -1
+		var bd := 1e9
+		for i in p.size():
+			var d := q.distance_to(p[i])
+			if d < bd:
+				bd = d
+				best = i
+		if best < 0 or bd > LEVEL_SNAP:
+			_level_refuse("%s/%s sits %.2f m from the nearest vertex of %s (%.2f, %.2f); drag it onto the corner it rounds"
+				% [node.name, c.name, bd, node.name, p[best].x if best >= 0 else 0.0,
+				p[best].y if best >= 0 else 0.0])
+			return out
+		out[best] = float(_lv_get(c, "radius", 0.0))
+	return out
+# ------------------------------------------------------ end scene levels --
+
 func _reset() -> void:
 	pos.resize(NP); prv.resize(NP)
 	inv_m.resize(NP); p_rad.resize(NP)
@@ -1724,7 +2171,7 @@ func _process(d: float) -> void:
 		var line := "time %.1fs   falls %d   tip %.0f m/s" % [secs, falls, tip_speed]
 		if finished:
 			line = "%s COMPLETE in %.1fs - press R to run it again" % [
-				"CRAG" if level_id == "crag" else "TRAVERSE", secs]
+				level_title(), secs]
 		if rec_on:
 			line += "   [REC %d   F = green dropped me   G = should have hooked   marks %d]" % [rec_cur.size(), rec_mark.size()]
 			# A MARK THAT IS NOT ACKNOWLEDGED GETS PRESSED TWICE, and two presses
@@ -3590,6 +4037,8 @@ const SNAP_SKIP := ["external_drive", "save_enabled", "save_path", "save_due",
 	# volume table is authored per level and read by nothing in the sim.
 	"t_arc_c", "t_arc_r", "t_arc_ang", "t_deep", "bd_poly", "bd_col",
 	"cam_vols",
+	# SCENE-LEVEL FURNITURE: why a scene was refused, and its caption block.
+	"level_err", "level_hud",
 	# and the per-tick candidate lists, rebuilt at the top of every tick from
 	# the particles' positions - derived, never carried
 	"cand_seg", "cand_arc",
@@ -4122,11 +4571,13 @@ func _boot_session() -> void:
 		print("RECORDING to %s" % rec_path)
 
 static func _cmdline_level() -> String:
-	# godot --path . -- --level lab | crag. Static, and read straight from the
-	# command line, because _build_level needs it and _build_level runs before
-	# _boot_session does. Anything other than "lab" or "crag" is the shipped
-	# traverse, which is also what no flag at all means - the default is the
-	# default.
+	# godot --path . -- --level lab | crag | <scene>. Static, and read straight
+	# from the command line, because _build_level needs it and _build_level
+	# runs before _boot_session does. No flag is the shipped traverse - the
+	# default is the default. "lab" and "crag" are this file's own builds;
+	# any other name is res://levels/<name>.tscn (see SCENE LEVELS), and a
+	# name that is not there is refused by the loader, not silently played as
+	# the traverse.
 	var args := OS.get_cmdline_user_args()
 	for i in args.size():
 		if args[i] == "--level" and i + 1 < args.size():

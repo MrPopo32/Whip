@@ -11,7 +11,10 @@ extends SceneTree
 ## not exist), and save_enabled and the pointer are put back the instant
 ## add_child returns. The script refuses to shoot if either survives.
 ##
-##   godot --path . -s res://tests/crag_view.gd -- --level crag in=user://crag_shots.dat out=DIR
+##   godot --path . -s res://tests/crag_view.gd -- [level=crag] in=user://crag_shots.dat out=DIR
+##
+## level= is any level name the game takes (a scene level included); the
+## states in in= must have been searched on the same level by crag_shots.
 const MAIN := preload("res://main.gd")
 const PPM := 60.0
 const DT := 1.0 / 60.0
@@ -29,17 +32,24 @@ func _process(_d: float) -> bool:
 	frames += 1
 	if frames == 1:
 		root.size = Vector2i(1600, 900)
+		var lvl := "crag"
 		for a: String in OS.get_cmdline_user_args():
 			if a.begins_with("out="):
 				outdir = a.substr(4)
 			if a.begins_with("in="):
 				inp = a.substr(3)
+			if a.begins_with("level="):
+				lvl = a.substr(6)
 		DirAccess.make_dir_recursive_absolute(
 			ProjectSettings.globalize_path(outdir))
 		m = MAIN.new()
 		m.external_drive = true
-		m.level_id = "crag"
+		m.level_id = lvl
 		m.setup_sim()
+		if String(m.level_err) != "":
+			print("REFUSING: %s" % String(m.level_err))
+			refused = true
+			return true
 		m.save_path = "user://crag_view_scratch.save"
 		root.add_child(m)                      # _ready -> _boot_session
 		m.save_enabled = false
@@ -48,7 +58,7 @@ func _process(_d: float) -> bool:
 			m.mouse_owned = false
 			Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
 		DirAccess.remove_absolute(ProjectSettings.globalize_path(m.save_path))
-		if m.save_enabled or m.mouse_owned or m.save_path == "user://run_crag.save":
+		if m.save_enabled or m.mouse_owned or m.save_path.begins_with("user://run"):
 			print("REFUSING: this session still owns a save slot or the pointer.")
 			refused = true
 			return true

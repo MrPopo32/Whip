@@ -1,0 +1,294 @@
+[gd_scene format=3]
+
+[ext_resource type="Script" path="res://levels/whip_level.gd" id="1_tcgv6"]
+[ext_resource type="Script" path="res://levels/whip_terrain.gd" id="2_8s5av"]
+[ext_resource type="Script" path="res://levels/whip_anchor.gd" id="3_wmifn"]
+
+[node name="Level" type="Node2D" unique_id=1319451150]
+script = ExtResource("1_tcgv6")
+hud = "THE WHIP - THE CRAG   (--level crag.tscn)   a gorge, nine drops, the rock decides which throws survive
+SPACE / LMB = CLOSE YOUR HAND on the rope. A wrap only takes in the moment you close it,
+and only holds while you hold. OPEN your hand and you leave the anchor that instant.
+Rock cannot be wrapped - only the anchors hold. Green ring = it holds. Amber = it betrays."
+
+[node name="Ground" type="Line2D" parent="." unique_id=1096979556]
+points = PackedVector2Array(-900, -600, -900, 0, 180, 0, 180, 180, 510, 180, 510, 360, 840, 360, 840, 540, 1170, 540, 1170, 720, 1500, 720, 1500, 900, 1830, 900, 1830, 1080, 2160, 1080, 2160, 1260, 2490, 1260, 2490, 1440, 2820, 1440, 2820, 1620, 3240, 1620, 3240, 1020)
+width = 6.0
+default_color = Color(0.32, 0.35, 0.42, 1)
+script = ExtResource("2_8s5av")
+
+[node name="Islands" type="Node2D" parent="." unique_id=86021430]
+
+[node name="H1_brow" type="Line2D" parent="Islands" unique_id=1577795808]
+points = PackedVector2Array(-648, -264, -348, -264, -348, -204, -648, -204)
+closed = true
+width = 6.0
+default_color = Color(0.32, 0.35, 0.42, 1)
+script = ExtResource("2_8s5av")
+
+[node name="H0_shelf" type="Line2D" parent="Islands" unique_id=1259803929]
+points = PackedVector2Array(-882, -87.600006, -818.4, -87.600006, -818.4, -75, -882, -75)
+closed = true
+width = 6.0
+default_color = Color(0.32, 0.35, 0.42, 1)
+script = ExtResource("2_8s5av")
+
+[node name="D0_shelf" type="Line2D" parent="Islands" unique_id=1552539157]
+points = PackedVector2Array(308.4, -87.600006, 402, -87.600006, 402, -45.6, 308.4, -45.6)
+closed = true
+width = 6.0
+default_color = Color(0.32, 0.35, 0.42, 1)
+script = ExtResource("2_8s5av")
+
+[node name="D1_brow" type="Line2D" parent="Islands" unique_id=1330762867]
+points = PackedVector2Array(444, -96, 744, -96, 744, -24, 444, -24)
+closed = true
+width = 6.0
+default_color = Color(0.32, 0.35, 0.42, 1)
+script = ExtResource("2_8s5av")
+
+[node name="D4_lump" type="Line2D" parent="Islands" unique_id=1232781634]
+points = PackedVector2Array(1560, 632.4, 1608, 632.4, 1608, 668.4, 1560, 668.4)
+closed = true
+width = 6.0
+default_color = Color(0.32, 0.35, 0.42, 1)
+script = ExtResource("2_8s5av")
+
+[node name="D5_shelf" type="Line2D" parent="Islands" unique_id=1303074663]
+points = PackedVector2Array(1940.4, 812.4, 2034.0001, 812.4, 2034.0001, 854.39996, 1940.4, 854.39996)
+closed = true
+width = 6.0
+default_color = Color(0.32, 0.35, 0.42, 1)
+script = ExtResource("2_8s5av")
+
+[node name="D6_brow" type="Line2D" parent="Islands" unique_id=1278105611]
+points = PackedVector2Array(2094, 786, 2394, 786, 2394, 858, 2094, 858)
+closed = true
+width = 6.0
+default_color = Color(0.32, 0.35, 0.42, 1)
+script = ExtResource("2_8s5av")
+
+[node name="D3_rib" type="Line2D" parent="Islands" unique_id=1256098883]
+points = PackedVector2Array(1255.2, 120, 1276.2001, 120, 1276.2001, 456, 1255.2, 456)
+closed = true
+width = 6.0
+default_color = Color(0.32, 0.35, 0.42, 1)
+script = ExtResource("2_8s5av")
+
+[node name="D8_rib" type="Line2D" parent="Islands" unique_id=1705705541]
+points = PackedVector2Array(2893.2002, 1020, 2914.2, 1020, 2914.2, 1356, 2893.2002, 1356)
+closed = true
+width = 6.0
+default_color = Color(0.32, 0.35, 0.42, 1)
+script = ExtResource("2_8s5av")
+
+[node name="H2_hood" type="Line2D" parent="Islands" unique_id=1744419093]
+points = PackedVector2Array(-180, -210, -60, -210, -60, -90, -85.799995, -90, -85.799995, -186, -180, -186)
+closed = true
+width = 6.0
+default_color = Color(0.32, 0.35, 0.42, 1)
+script = ExtResource("2_8s5av")
+
+[node name="D2_hood" type="Line2D" parent="Islands" unique_id=1164789467]
+points = PackedVector2Array(864, 150, 984, 150, 984, 270, 958.2, 270, 958.2, 174, 864, 174)
+closed = true
+width = 6.0
+default_color = Color(0.32, 0.35, 0.42, 1)
+script = ExtResource("2_8s5av")
+
+[node name="D7_hood" type="Line2D" parent="Islands" unique_id=15047723]
+points = PackedVector2Array(2514, 1050, 2634, 1050, 2634, 1170, 2608.2002, 1170, 2608.2002, 1074, 2514, 1074)
+closed = true
+width = 6.0
+default_color = Color(0.32, 0.35, 0.42, 1)
+script = ExtResource("2_8s5av")
+
+[node name="Anchors" type="Node2D" parent="." unique_id=235095555]
+
+[node name="H0_HORN" type="Marker2D" parent="Anchors" unique_id=493188329]
+position = Vector2(-774, -132)
+gizmo_extents = 8.4
+script = ExtResource("3_wmifn")
+radius = 0.14
+
+[node name="H1_STALACTITE" type="Marker2D" parent="Anchors" unique_id=1667505428]
+position = Vector2(-498, -132)
+gizmo_extents = 7.2
+script = ExtResource("3_wmifn")
+
+[node name="H2_WINDOW" type="Marker2D" parent="Anchors" unique_id=1046909995]
+position = Vector2(-120, -132)
+gizmo_extents = 7.2
+script = ExtResource("3_wmifn")
+
+[node name="D0_HORN" type="Marker2D" parent="Anchors" unique_id=245597569]
+position = Vector2(264, -132)
+gizmo_extents = 8.4
+script = ExtResource("3_wmifn")
+radius = 0.14
+
+[node name="D1_STALACTITE" type="Marker2D" parent="Anchors" unique_id=23471844]
+position = Vector2(594, 48)
+gizmo_extents = 7.2
+script = ExtResource("3_wmifn")
+
+[node name="D2_WINDOW" type="Marker2D" parent="Anchors" unique_id=1161244548]
+position = Vector2(924, 228)
+gizmo_extents = 7.2
+script = ExtResource("3_wmifn")
+
+[node name="D3_BRANCH" type="Marker2D" parent="Anchors" unique_id=1080560632]
+position = Vector2(1218, 408)
+gizmo_extents = 7.2
+script = ExtResource("3_wmifn")
+
+[node name="D4_KNOB" type="Marker2D" parent="Anchors" unique_id=329013795]
+position = Vector2(1584, 588)
+gizmo_extents = 8.4
+script = ExtResource("3_wmifn")
+radius = 0.14
+
+[node name="D5_HORN" type="Marker2D" parent="Anchors" unique_id=1991935471]
+position = Vector2(1914, 768)
+gizmo_extents = 8.4
+script = ExtResource("3_wmifn")
+radius = 0.14
+
+[node name="D6_STALACTITE" type="Marker2D" parent="Anchors" unique_id=272848309]
+position = Vector2(2244, 948)
+gizmo_extents = 7.2
+script = ExtResource("3_wmifn")
+
+[node name="D7_WINDOW" type="Marker2D" parent="Anchors" unique_id=687214227]
+position = Vector2(2574, 1128)
+gizmo_extents = 7.2
+script = ExtResource("3_wmifn")
+
+[node name="D8_BRANCH" type="Marker2D" parent="Anchors" unique_id=1206895132]
+position = Vector2(2859, 1308)
+gizmo_extents = 7.2
+script = ExtResource("3_wmifn")
+
+[node name="Spawn" type="Marker2D" parent="." unique_id=1139537067]
+position = Vector2(-390, -60)
+
+[node name="Goal" type="Marker2D" parent="." unique_id=539374151]
+position = Vector2(3120, 1620)
+
+[node name="Backdrop" type="Node2D" parent="." unique_id=785579993]
+
+[node name="far_cliff" type="Polygon2D" parent="Backdrop" unique_id=1182118532]
+color = Color(0.125, 0.135, 0.17, 1)
+polygon = PackedVector2Array(-2400, -840, -540, -660, -180, -810, 180, -540, 510, -450, 840, -300, 1170, -210, 1500, -60, 1830, 90, 2160, 210, 2490, 360, 2820, 480, 3240, 570, 4800, 720, 4800, 3600, -2400, 3600)
+
+[node name="D4_pillar" type="Polygon2D" parent="Backdrop" unique_id=621350089]
+color = Color(0.155, 0.17, 0.215, 1)
+polygon = PackedVector2Array(1557, 660, 1611, 660, 1638, 936, 1530, 936)
+
+[node name="H1_spike" type="Polygon2D" parent="Backdrop" unique_id=2044255529]
+color = Color(0.155, 0.17, 0.215, 1)
+polygon = PackedVector2Array(-523.2, -204, -472.80002, -204, -498, -135)
+
+[node name="D1_spike" type="Polygon2D" parent="Backdrop" unique_id=1505631830]
+color = Color(0.155, 0.17, 0.215, 1)
+polygon = PackedVector2Array(568.8, -24, 619.19995, -24, 594, 45)
+
+[node name="D6_spike" type="Polygon2D" parent="Backdrop" unique_id=680707493]
+color = Color(0.155, 0.17, 0.215, 1)
+polygon = PackedVector2Array(2218.8, 858, 2269.2, 858, 2244, 945)
+
+[node name="H1_curtain" type="Polygon2D" parent="Backdrop" unique_id=659556316]
+color = Color(0.155, 0.17, 0.215, 1)
+polygon = PackedVector2Array(-612, -264, -372, -264, -312, -414, -660, -414)
+
+[node name="D1_curtain" type="Polygon2D" parent="Backdrop" unique_id=391153385]
+color = Color(0.155, 0.17, 0.215, 1)
+polygon = PackedVector2Array(480, -96, 720, -96, 780, -246, 432, -246)
+
+[node name="D6_curtain" type="Polygon2D" parent="Backdrop" unique_id=1146554544]
+color = Color(0.155, 0.17, 0.215, 1)
+polygon = PackedVector2Array(2130, 786, 2370, 786, 2430, 636, 2082, 636)
+
+[node name="H0_buttress" type="Polygon2D" parent="Backdrop" unique_id=1128132589]
+color = Color(0.155, 0.17, 0.215, 1)
+polygon = PackedVector2Array(-822, -78, -882, -84, -900, 60, -798, 60)
+
+[node name="D0_buttress" type="Polygon2D" parent="Backdrop" unique_id=30131972]
+color = Color(0.155, 0.17, 0.215, 1)
+polygon = PackedVector2Array(338.4, -75.6, 402, -87.600006, 474, -183.59999, 498, 38.399998, 402, -15.599999)
+
+[node name="D5_buttress" type="Polygon2D" parent="Backdrop" unique_id=279848217]
+color = Color(0.155, 0.17, 0.215, 1)
+polygon = PackedVector2Array(1970.4, 824.39996, 2034.0001, 812.4, 2106, 716.39996, 2130, 938.4, 2034.0001, 884.39996)
+
+[node name="D3_curtain" type="Polygon2D" parent="Backdrop" unique_id=1461807193]
+color = Color(0.155, 0.17, 0.215, 1)
+polygon = PackedVector2Array(1237.2001, 138, 1294.2, 138, 1306.2001, -60, 1225.2, -60)
+
+[node name="D8_curtain" type="Polygon2D" parent="Backdrop" unique_id=254971407]
+color = Color(0.155, 0.17, 0.215, 1)
+polygon = PackedVector2Array(2875.2, 1038, 2932.2, 1038, 2944.2, 840, 2863.2002, 840)
+
+[node name="D2_curtain" type="Polygon2D" parent="Backdrop" unique_id=761764821]
+color = Color(0.155, 0.17, 0.215, 1)
+polygon = PackedVector2Array(846, 168, 1002.00006, 168, 1014, -30, 834, -30)
+
+[node name="D7_curtain" type="Polygon2D" parent="Backdrop" unique_id=784078773]
+color = Color(0.155, 0.17, 0.215, 1)
+polygon = PackedVector2Array(2496, 1068, 2652, 1068, 2664, 870, 2484, 870)
+
+[node name="H2_curtain" type="Polygon2D" parent="Backdrop" unique_id=338882679]
+color = Color(0.155, 0.17, 0.215, 1)
+polygon = PackedVector2Array(-198, -192, -42, -192, -30, -390, -210, -390)
+
+[node name="near_rock" type="Polygon2D" parent="Backdrop" unique_id=1307209422]
+color = Color(0.19, 0.205, 0.25, 1)
+polygon = PackedVector2Array(-2400, -600, -900, -600, -900, 0, 180, 0, 180, 180, 510, 180, 510, 360, 840, 360, 840, 540, 1170, 540, 1170, 720, 1500, 720, 1500, 900, 1830, 900, 1830, 1080, 2160, 1080, 2160, 1260, 2490, 1260, 2490, 1440, 2820, 1440, 2820, 1620, 3240, 1620, 3240, 1020, 4800, 1020, 4800, 3600, -2400, 3600)
+
+[node name="Paint17" type="Polygon2D" parent="Backdrop" unique_id=404480590]
+color = Color(0.19, 0.205, 0.25, 1)
+polygon = PackedVector2Array(-648, -264, -348, -264, -348, -204, -648, -204)
+
+[node name="Paint18" type="Polygon2D" parent="Backdrop" unique_id=1005353468]
+color = Color(0.19, 0.205, 0.25, 1)
+polygon = PackedVector2Array(-882, -87.600006, -818.4, -87.600006, -818.4, -75, -882, -75)
+
+[node name="Paint19" type="Polygon2D" parent="Backdrop" unique_id=1012030285]
+color = Color(0.19, 0.205, 0.25, 1)
+polygon = PackedVector2Array(308.4, -87.600006, 402, -87.600006, 402, -45.6, 308.4, -45.6)
+
+[node name="Paint20" type="Polygon2D" parent="Backdrop" unique_id=1738446046]
+color = Color(0.19, 0.205, 0.25, 1)
+polygon = PackedVector2Array(444, -96, 744, -96, 744, -24, 444, -24)
+
+[node name="Paint21" type="Polygon2D" parent="Backdrop" unique_id=1164666377]
+color = Color(0.19, 0.205, 0.25, 1)
+polygon = PackedVector2Array(1560, 632.4, 1608, 632.4, 1608, 668.4, 1560, 668.4)
+
+[node name="Paint22" type="Polygon2D" parent="Backdrop" unique_id=1096955386]
+color = Color(0.19, 0.205, 0.25, 1)
+polygon = PackedVector2Array(1940.4, 812.4, 2034.0001, 812.4, 2034.0001, 854.39996, 1940.4, 854.39996)
+
+[node name="Paint23" type="Polygon2D" parent="Backdrop" unique_id=1313231226]
+color = Color(0.19, 0.205, 0.25, 1)
+polygon = PackedVector2Array(2094, 786, 2394, 786, 2394, 858, 2094, 858)
+
+[node name="Paint24" type="Polygon2D" parent="Backdrop" unique_id=1298907735]
+color = Color(0.19, 0.205, 0.25, 1)
+polygon = PackedVector2Array(1255.2, 120, 1276.2001, 120, 1276.2001, 456, 1255.2, 456)
+
+[node name="Paint25" type="Polygon2D" parent="Backdrop" unique_id=418895585]
+color = Color(0.19, 0.205, 0.25, 1)
+polygon = PackedVector2Array(2893.2002, 1020, 2914.2, 1020, 2914.2, 1356, 2893.2002, 1356)
+
+[node name="Paint26" type="Polygon2D" parent="Backdrop" unique_id=1114809493]
+color = Color(0.19, 0.205, 0.25, 1)
+polygon = PackedVector2Array(-180, -210, -60, -210, -60, -90, -85.799995, -90, -85.799995, -186, -180, -186)
+
+[node name="Paint27" type="Polygon2D" parent="Backdrop" unique_id=1603977925]
+color = Color(0.19, 0.205, 0.25, 1)
+polygon = PackedVector2Array(864, 150, 984, 150, 984, 270, 958.2, 270, 958.2, 174, 864, 174)
+
+[node name="Paint28" type="Polygon2D" parent="Backdrop" unique_id=1607335057]
+color = Color(0.19, 0.205, 0.25, 1)
+polygon = PackedVector2Array(2514, 1050, 2634, 1050, 2634, 1170, 2608.2002, 1170, 2608.2002, 1074, 2514, 1074)

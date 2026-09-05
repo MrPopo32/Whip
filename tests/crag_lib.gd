@@ -26,10 +26,13 @@ const GRID := [
 ]
 const SDS := [9, 14, 5]
 
-static func new_crag() -> Node2D:
+static func new_crag(lvl := "crag") -> Node2D:
+	# The crag by default; any level by name (a scene level included), since
+	# the crawl-in, the wind-up and the grid are properties of the body and
+	# the whip, not of the crag. tests/level_gate.gd R passes the name in.
 	var m: Node2D = MAIN.new()
 	m.external_drive = true
-	m.level_id = "crag"
+	m.level_id = lvl
 	m.setup_sim()             # FIRST - it re-derives save_path from the level
 	m.save_enabled = false    # and no test writes any slot
 	return m
@@ -184,10 +187,11 @@ static func approach(m: Node2D, k: int) -> Dictionary:
 # in which case every stroke is thrown and counted. Returns the ledger, and
 # in "m" the sim standing at the moment of the winning catch + SETTLE ticks
 # (caller frees it), or no "m" if nothing locked.
-static func search(k: int, cue: String, all := false, short_in := false) -> Dictionary:
+static func search(k: int, cue: String, all := false, short_in := false,
+		lvl := "crag") -> Dictionary:
 	var out := {"k": k, "att": 0, "caught": 0, "locked": 0, "green": 0,
 		"crawl_t": -1, "cue": cue}
-	var m := new_crag()
+	var m := new_crag(lvl)
 	var ap := approach(m, k)
 	var dir: float = float(ap["dir"])
 	var ax: float = m.a_pos[k].x
@@ -223,7 +227,7 @@ static func search(k: int, cue: String, all := false, short_in := false) -> Dict
 		for ang: Array in GRID:
 			for sd in SDS:
 				for pull in [false, true]:
-					var mm := new_crag()
+					var mm := new_crag(lvl)
 					mm.restore(base)
 					var want: float = ax - dir * float(lead)
 					if absf(want - here) > 0.15:

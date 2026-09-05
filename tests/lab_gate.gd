@@ -14,7 +14,12 @@ extends SceneTree
 ##     and the arc floor jam_min_th is a real gate in BOTH directions
 ##  L7 G7 asked of the jam: a THROWN catch holds with the hand shut, goes
 ##     green, and drops the body in one frame when the hand opens
+##
+## L2, L3, L4 and L5's walk are the generic level checks, taken from
+## tests/level_lib.gd so that this gate, crag_gate and level_gate (any level,
+## by name) measure with one piece of code. L1, L6 and L7 are the lab's own.
 const MAIN := preload("res://main.gd")
+const LIB := preload("res://tests/level_lib.gd")
 
 const SHIPPED_FP := 8896234646103814336
 const SHIPPED_HASH := 2762505307938286422
@@ -23,12 +28,7 @@ const TMP := "user://lab_gate_tmp.save"
 var fail: Array[String] = []
 
 func new_sim(lvl: String) -> Node2D:
-	var m: Node2D = MAIN.new()
-	m.external_drive = true
-	m.level_id = lvl
-	m.setup_sim()
-	m.save_enabled = false
-	return m
+	return LIB.new_sim(lvl)
 
 # --------------------------------------------------------------------- L1 ---
 func l1() -> void:
@@ -45,34 +45,13 @@ func l1() -> void:
 		if int(d.a_jam[k]) != 0 or String(d.a_name[k]) != "":
 			fail.append("L1 shipped anchor %d gained a jam flag or a caption" % k)
 	d.free()
-	# hashrun.gd's own scripted session, inline, so this gate stands alone.
-	var m := new_sim("")
-	for t in 900:
-		var b: Vector2 = m.body_pos
-		var tgt: Vector2
-		var grip := false
-		if t < 90:
-			tgt = b + Vector2(0.5, -0.5)
-		elif t < 280:
-			var ph := float(t - 90) * 0.11
-			tgt = b + Vector2(cos(ph), sin(ph)) * 1.1
-		elif t < 340:
-			tgt = b + Vector2(-1.05, -0.35)
-		elif t < 352:
-			tgt = b + Vector2(1.05, -0.45)
-		elif t < 600:
-			tgt = b + Vector2(0.8, -0.8); grip = t > 420
-		else:
-			var p2 := float(t) * 0.05
-			tgt = b + Vector2(cos(p2), -0.6); grip = true
-		m.step_tick(tgt, grip)
-	var h: int = m.state_hash()
+	# hashrun.gd's own scripted session, from the kit, so this gate stands alone.
+	var h: int = LIB.golden_hash()
 	if h != SHIPPED_HASH:
 		fail.append("L1 golden hash %d != %d - the sim's BEHAVIOUR moved" % [h, SHIPPED_HASH])
 	else:
 		print("  L1 ok: shipped fp %d, golden hash %d, 11 segs / 11 beams, slot user://run.save"
 			% [SHIPPED_FP, h])
-	m.free()
 
 # --------------------------------------------------------------------- L2 ---
 func l2() -> void:
@@ -81,113 +60,28 @@ func l2() -> void:
 	lab.free()
 	if lab_fp == SHIPPED_FP:
 		fail.append("L2 the lab fingerprints the same as the traverse")
-	var dir := DirAccess.open("res://tapes")
-	if dir == null:
-		fail.append("L2 no tapes/ directory")
-		return
-	var n := 0
-	for f in dir.get_files():
-		if not f.ends_with(".tape"):
-			continue
-		var t := MAIN.tape_load("res://tapes/" + f)
-		if not bool(t.get("ok", false)):
-			fail.append("L2 %s unreadable: %s" % [f, str(t.get("err", ""))])
-			continue
-		n += 1
-		if int(t["lvl"]) != SHIPPED_FP:
-			fail.append("L2 %s names level %d, not the shipped %d"
-				% [f, int(t["lvl"]), SHIPPED_FP])
-		if int(t["lvl"]) == lab_fp:
-			fail.append("L2 %s would replay into the LAB" % f)
-	if n != 6:
-		fail.append("L2 found %d tapes, expected 6" % n)
-	elif fail.is_empty():
+	elif LIB.tapes_check(lab_fp, "the LAB", "L2", fail):
 		print("  L2 ok: 6 tapes, all still naming %d; the lab is %d"
 			% [SHIPPED_FP, lab_fp])
 
 # --------------------------------------------------------------------- L3 ---
-# The lab's air is the box its own walls and floor enclose. DERIVED from the
-# terrain, never written down here: a hardcoded -8 in this checker went stale
-# the moment the left wall moved to -12 and reported 2 of 3 normals wrong on a
-# level that was fine - which is exactly the failure the stuck-in-floor probe
-# had (it carried the OLD level geometry and reported a bug 0.79 m in mid-air).
-# A stored normal is correct when a point a hair along it is INSIDE that box
-# and a point a hair against it is outside. Winding is the thing that gets this
-# wrong, and it is the winding bug that once pushed the whip through the floor,
-# so the counter-check is to run the same checker on the REVERSED walk and
-# demand that it fail every segment.
-var box_lo := Vector2.ZERO
-var box_hi := Vector2.ZERO
-
-func in_air(q: Vector2) -> bool:
-	return q.x > box_lo.x and q.x < box_hi.x \
-		and q.y > box_lo.y and q.y < box_hi.y
-
-func normals_score(ta: PackedVector2Array, tb: PackedVector2Array) -> int:
-	var ok := 0
-	for i in ta.size():
-		var n := Vector2((tb[i] - ta[i]).y, -(tb[i] - ta[i]).x).normalized()
-		var mid := (ta[i] + tb[i]) * 0.5
-		if in_air(mid + n * 0.002) and not in_air(mid - n * 0.002):
-			ok += 1
-	return ok
-
+# The lab's air is DERIVED from the terrain, never written down here: a
+# hardcoded -8 in an earlier checker went stale the moment the left wall
+# moved to -12 and reported 2 of 3 normals wrong on a level that was fine -
+# which is exactly the failure the stuck-in-floor probe had (it carried the
+# OLD level geometry and reported a bug 0.79 m in mid-air). The kit's checker
+# chains the segments back into loops and closes the open one over the sky,
+# which on this bench is the box the walls and floor enclose; a normal is
+# right when a point a hair along it is inside and a hair against it is
+# outside, and the checker has to score 0 on the REVERSED walk.
 func l3() -> void:
 	var m := new_sim("lab")
-	box_lo = Vector2(1e9, 1e9)
-	box_hi = Vector2(-1e9, -1e9)
-	for i in m.t_a.size():
-		for q: Vector2 in [m.t_a[i], m.t_b[i]]:
-			box_lo = Vector2(minf(box_lo.x, q.x), minf(box_lo.y, q.y))
-			box_hi = Vector2(maxf(box_hi.x, q.x), maxf(box_hi.y, q.y))
-	var good := normals_score(m.t_a, m.t_b)
-	# the same walk, backwards
-	var ra := PackedVector2Array()
-	var rb := PackedVector2Array()
-	for i in range(m.t_a.size() - 1, -1, -1):
-		ra.append(m.t_b[i])
-		rb.append(m.t_a[i])
-	var bad := normals_score(ra, rb)
-	if good != m.t_a.size():
-		fail.append("L3 %d of %d lab normals point into the air"
-			% [good, m.t_a.size()])
-	elif bad != 0:
-		fail.append("L3 the normal checker scores %d on a REVERSED winding - it cannot fail, so it cannot pass" % bad)
-	else:
-		print("  L3 ok: air box (%.0f,%.0f)..(%.0f,%.0f); %d/%d lab normals into it; reversed winding scores 0/%d"
-			% [box_lo.x, box_lo.y, box_hi.x, box_hi.y, good, m.t_a.size(),
-			m.t_a.size()])
+	LIB.normals_check(m, "L3", fail)
 	m.free()
 
 # --------------------------------------------------------------------- L4 ---
 func l4() -> void:
-	var d := new_sim("")
-	var l := new_sim("lab")
-	if d.save_path == l.save_path:
-		fail.append("L4 both levels write %s" % d.save_path)
-	if l.save_path != "user://run_lab.save":
-		fail.append("L4 the lab writes %s" % l.save_path)
-	# a TRAVERSE save must be refused by a LAB sim, and the other way round.
-	d.body_pos = Vector2(3.0, -1.0)
-	if not d.save_to(TMP):
-		fail.append("L4 could not write the temp save")
-	var r_wrong: int = l.load_from(TMP)
-	var d2 := new_sim("")
-	var r_right: int = d2.load_from(TMP)
-	l.save_to(TMP)
-	var d3 := new_sim("")
-	var r_wrong2: int = d3.load_from(TMP)
-	DirAccess.remove_absolute(ProjectSettings.globalize_path(TMP))
-	DirAccess.remove_absolute(ProjectSettings.globalize_path(TMP + ".tmp"))
-	if r_wrong != -1:
-		fail.append("L4 a lab session ACCEPTED a traverse save (load_from -> %d)" % r_wrong)
-	if r_wrong2 != -1:
-		fail.append("L4 a traverse session ACCEPTED a lab save (load_from -> %d)" % r_wrong2)
-	if r_right != 1:
-		fail.append("L4 a traverse save was refused by its OWN level (load_from -> %d) - the refusal above proves nothing if nothing is ever accepted" % r_right)
-	if fail.is_empty():
-		print("  L4 ok: slots user://run.save / user://run_lab.save; cross-load -1 both ways, own-load 1")
-	d.free(); d2.free(); d3.free(); l.free()
+	LIB.slot_check("lab", "user://run_lab.save", "L4", fail, TMP)
 
 # --------------------------------------------------------------------- L5 ---
 func l5() -> void:
@@ -218,31 +112,17 @@ func l5() -> void:
 		right = maxf(right, maxf(m.t_a[i].x, m.t_b[i].x))
 	if right - m.BODY_R > 20.5:
 		fail.append("L5 the body can reach x %.2f, past the volume-0 boundary at 20.5 - the camera would step 3 m down to a tier the lab does not have" % (right - m.BODY_R))
+	if fail.is_empty():
+		print("  L5 ok: stations %.2f-%.2f m up, closest pair %.2f m apart, body can reach x %.2f"
+			% [minh, maxh, mingap, right - m.BODY_R])
 	# WALKABLE END TO END: crawl from spawn to the far wall with the lash gait
 	# and check it actually gets there. No number is assumed - it is walked.
-	# tests/ground_probe.gd's OWN best gait, taken from its printed winner rather
-	# than invented here: period 24, back 2.83 rad for the first 45%, forward
-	# -0.94 rad for the rest, and the hand never closes (its taut phase begins
-	# at 1.10 of a period, which never arrives). That last clause matters for
-	# this gate: with the hand open no beam can engage, so what is measured is
-	# WALKING and not walking-with-accidental-catches.
-	var x0: float = m.body_pos.x
-	var t := 0
-	while t < 60 * 180 and m.body_pos.x < right - 1.0:
-		var f := float(t % 24) / 24.0
-		var tgt: Vector2
-		if f < 0.45:
-			tgt = m.body_pos + Vector2(cos(2.83), sin(2.83)) * m.REACH
-		else:
-			tgt = m.body_pos + Vector2(cos(-0.94), sin(-0.94)) * m.REACH
-		m.step_tick(tgt, false)
-		t += 1
-	if m.body_pos.x < right - 1.0:
-		fail.append("L5 the bench is not walkable: 120 s of gait moved the body from %.2f to %.2f (wall at %.2f)"
-			% [x0, m.body_pos.x, right])
-	elif fail.is_empty():
-		print("  L5 ok: stations %.2f-%.2f m up, closest pair %.2f m apart, body reaches x %.2f in %.1f s of gait"
-			% [minh, maxh, mingap, m.body_pos.x, t / 60.0])
+	# tests/ground_probe.gd's OWN best gait (crag_lib carries it: period 24,
+	# back 2.83 rad for the first 45%, forward -0.94 rad for the rest) and the
+	# hand never closes. That last clause matters for this gate: with the hand
+	# open no beam can engage, so what is measured is WALKING and not
+	# walking-with-accidental-catches.
+	LIB.walk_check(m, "L5", fail)
 	m.free()
 
 # --------------------------------------------------------------------- L6 ---

@@ -9,34 +9,47 @@ extends SceneTree
 ## Nothing is hand-laid: each state is what step_tick produced from (cursor,
 ## grip) alone.
 ##
-##   godot --headless --path . -s res://tests/crag_shots.gd -- [out=user://crag_shots.dat] [k=3,5,7]
+##   godot --headless --path . -s res://tests/crag_shots.gd -- [level=crag] [out=user://crag_shots.dat] [k=3,5,7]
+##
+## level= takes any level name the game does (a scene level included, e.g.
+## level=steps or level=crag.tscn): the searched throw is a property of the
+## body and the whip, not of the crag.
 const LIB := preload("res://tests/crag_lib.gd")
+const LLIB := preload("res://tests/level_lib.gd")
 const DEFAULT_OUT := "user://crag_shots.dat"
 
 func _initialize() -> void:
 	var outp := DEFAULT_OUT
+	var lvl := "crag"
 	var which: Array = []
 	for a: String in OS.get_cmdline_user_args():
 		if a.begins_with("out="):
 			outp = a.substr(4)
+		if a.begins_with("level="):
+			lvl = a.substr(6)
 		if a.begins_with("k="):
 			for s in a.substr(2).split(","):
 				which.append(int(s))
-	var m := LIB.new_crag()
-	var names := LIB.feat_names(m)
+	var m := LIB.new_crag(lvl)
+	if String(m.level_err) != "":
+		print("FAIL %s" % String(m.level_err))
+		m.free()
+		quit(1)
+		return
+	var names := LLIB.anchor_names(lvl, m)
 	if which.is_empty():
 		for k in m.a_pos.size():
 			which.append(k)
 	m.free()
 	var shots: Array = []
 	for k: int in which:
-		var r: Dictionary = LIB.search(k, "wrap")
+		var r: Dictionary = LIB.search(k, "wrap", false, false, lvl)
 		if not r.has("m"):
-			r = LIB.search(k, "touch")
+			r = LIB.search(k, "touch", false, false, lvl)
 		if not r.has("m"):
-			r = LIB.search(k, "wrap", false, true)
+			r = LIB.search(k, "wrap", false, true, lvl)
 		if not r.has("m"):
-			r = LIB.search(k, "touch", false, true)
+			r = LIB.search(k, "touch", false, true, lvl)
 		if not r.has("m"):
 			print("  k%d %-14s NO searched stroke locked it (%d strokes, %d caught)"
 				% [k, names[k], int(r["att"]), int(r["caught"])])

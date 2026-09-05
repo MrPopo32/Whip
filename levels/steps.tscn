@@ -1,0 +1,82 @@
+[gd_scene load_steps=4 format=3]
+
+[ext_resource type="Script" path="res://levels/whip_level.gd" id="1_lvl"]
+[ext_resource type="Script" path="res://levels/whip_terrain.gd" id="2_ter"]
+[ext_resource type="Script" path="res://levels/whip_anchor.gd" id="3_anc"]
+
+[node name="Level" type="Node2D"]
+script = ExtResource("1_lvl")
+hud = "THE WHIP - THE STEPS   (--level steps)   three drops, four anchors: a beam, a jam, a knob, a thin beam
+SPACE / LMB = CLOSE YOUR HAND on the rope. A wrap only takes in the moment you close it,
+and only holds while you hold. OPEN your hand and you leave the anchor that instant.
+Green ring = it holds. Amber = it betrays."
+
+[node name="Ground" type="Line2D" parent="."]
+script = ExtResource("2_ter")
+points = PackedVector2Array(-720, -480, -720, 0, 360, 0, 360, 180, 840, 180, 840, 360, 1320, 360, 1320, 540, 1920, 540, 1920, 180)
+width = 6.0
+default_color = Color(0.32, 0.35, 0.42, 1)
+
+[node name="Islands" type="Node2D" parent="."]
+
+[node name="A2_lump" type="Line2D" parent="Islands"]
+script = ExtResource("2_ter")
+points = PackedVector2Array(900, 92.4, 948, 92.4, 948, 128.4, 900, 128.4)
+closed = true
+width = 6.0
+default_color = Color(0.32, 0.35, 0.42, 1)
+
+[node name="Anchors" type="Node2D" parent="."]
+
+[node name="A0_BEAM" type="Marker2D" parent="Anchors"]
+position = Vector2(-120, -132)
+gizmo_extents = 13.2
+script = ExtResource("3_anc")
+radius = 0.22
+caption = "BEAM"
+
+[node name="A1_JAM" type="Marker2D" parent="Anchors"]
+position = Vector2(444, -132)
+gizmo_extents = 6.6
+script = ExtResource("3_anc")
+radius = 0.11
+jam = true
+caption = "JAM"
+
+[node name="A2_KNOB" type="Marker2D" parent="Anchors"]
+position = Vector2(924, 48)
+gizmo_extents = 8.4
+script = ExtResource("3_anc")
+radius = 0.14
+caption = "KNOB"
+
+[node name="A3_THIN_BEAM" type="Marker2D" parent="Anchors"]
+position = Vector2(1404, 228)
+gizmo_extents = 6.6
+script = ExtResource("3_anc")
+radius = 0.11
+caption = "THIN BEAM"
+
+[node name="Spawn" type="Marker2D" parent="."]
+position = Vector2(-390, -60)
+
+[node name="Goal" type="Marker2D" parent="."]
+position = Vector2(1680, 540)
+
+[node name="Backdrop" type="Node2D" parent="."]
+
+[node name="far_cliff" type="Polygon2D" parent="Backdrop"]
+color = Color(0.125, 0.135, 0.17, 1)
+polygon = PackedVector2Array(-2400, -840, -600, -660, 0, -540, 600, -420, 1200, -240, 1800, -60, 3600, 60, 3600, 2400, -2400, 2400)
+
+[node name="A2_pillar" type="Polygon2D" parent="Backdrop"]
+color = Color(0.155, 0.17, 0.215, 1)
+polygon = PackedVector2Array(897, 120, 951, 120, 978, 360, 870, 360)
+
+[node name="near_rock" type="Polygon2D" parent="Backdrop"]
+color = Color(0.19, 0.205, 0.25, 1)
+polygon = PackedVector2Array(-2400, -480, -720, -480, -720, 0, 360, 0, 360, 180, 840, 180, 840, 360, 1320, 360, 1320, 540, 1920, 540, 1920, 180, 3600, 180, 3600, 2400, -2400, 2400)
+
+[node name="A2_lump_fill" type="Polygon2D" parent="Backdrop"]
+color = Color(0.19, 0.205, 0.25, 1)
+polygon = PackedVector2Array(900, 92.4, 948, 92.4, 948, 128.4, 900, 128.4)

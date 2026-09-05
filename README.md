@@ -890,6 +890,103 @@ waveform, distribution, trace and photograph scripts that were run while the
 sound was built were scratch and were not committed; `aud_gate.gd` is the only
 audio test in the tree.
 
+## One-to-beam is fundamental, and it was measured, not assumed
+
+The developer put it exactly: the hammer in Getting Over It is one stroke
+against a board made of *everything*; the whip is one stroke against a board
+made of *posts*. Terrain around a post changes the shot, it does not change
+what the whip can touch. Is there a second interaction with the world that is
+not holding?
+
+Thirteen designs from seven independent angles were built as feasibility
+probes and then attacked by two skeptics each - one on the physics (does it
+survive what this sim has already shown to be dead), one on the design (what
+does the *hand* do that it cannot today). **Zero survived both.** Three
+survived the physics and died on the design; ten died on both. The angles:
+things the whip wraps and then *moves* (a trapeze, a trolley on a rail); the
+world *reading* the load a wrap carries (a rotten beam, a peg that tears out);
+the rope as a *path* (a redirect post, the loaded line bending over ledges);
+the handle as a *stick* that pushes like the hammer (a plant, a brace); the
+world with a *clock* (a hung log, a rotating wheel); the whip *removing* things
+(fatigue, a saw, a brittle beam).
+
+They died on three walls, and the walls are now measured rather than argued:
+
+- **The hold's load is not a dial the player owns.** `_wrap_tension()` is a
+  pendulum estimate from the body's kinematics, not the load; the load the
+  rope actually carries is set by the arm tether's hard stop, and it is
+  dominated by *transients* - the catch yank and the fall-arrest, not the
+  pump. Over 2668 locked airborne ticks of the player's own session the peak
+  load reads p50 344 N, p95 1596 N, max 2255 N, and a beam rated anywhere
+  from 120 to 320 N breaks on 20-21 of 25 episodes. Any world element that
+  responds to "how hard you pull" is a coin, and it fires on arrival, not on
+  anything the hand chose to do. That kills the whole *force* family and the
+  *subtraction* family with it.
+- **A free tail cannot follow a moving anchor.** There is no rope-on-rope in
+  this sim, so a wrap is held on by the pin and the self-crossing, not by the
+  tail's own tension. Accelerate the anchor - a trapeze at 3.7 m/s, a wheel
+  rim - and the free tail winds the other way and the measured arc falls
+  through `th_part` inside ten ticks, with the hand shut and the wrapped
+  window welded in place. Only an anchor drifting slowly *away* from the body
+  (under ~0.5 m/s, load side leading) keeps a thrown lock. That kills the
+  *dynamics* family and the *time* family: what survives is a conveyor, not a
+  ride.
+- **Anything the rope wraps that it did not throw at holds with the hand
+  open.** A redirect post the loaded line winds itself onto is the hourglass
+  again: a non-engaged anchor keeps `anchor_mu`, so the standing part grips it
+  whatever the hand does. And the *handle* pushing into rock already lifts the
+  body 0.63-1.29 m with the hand open (a latent exploit nobody uses: 351
+  planted ticks in the recorded session, 0 of them pushing) - a haft only
+  makes it a walking stick. That kills the *topology* family and the *handle*
+  family.
+
+And every one of the thirteen, on the design lens, reduced to the same hand:
+throw, shut inside `GRIP_WINDOW`, hold, pump, open. The movers changed *when*.
+The ratings changed *how much*. The pegs changed what the *world* did to a
+swing the hand already makes. None changed what the hand does. The three that
+survived the physics - a hung log, a fatiguing beam, a brittle beam - are the
+lab's THIN BEAM row in three costumes: same verb, less margin.
+
+**So the whip is one motion, and that is the game.** So is the hammer. Its
+depth was never a repertoire of swings; it was a mountain that offered a
+thousand *places* to apply one swing, each with different consequences, and
+the player's creativity was in choosing a line. The whip's board is the anchor
+graph. The traverse is a corridor - one line. So is the crag. Where
+approach-creativity lives for a one-motion tool is a level with *branching
+routes*: three ways up, each a different anchor sequence with a different
+risk, none of them the "right" one. That is level design, not mechanism, and
+`tests/route_variety.gd` already measures it - and already found, on the
+traverse, a cold catch on the fast line from the tier *behind* it that the
+level's own design assumed impossible. The board has more lines than were
+drawn on it.
+
+Salvage from the panel that is *not* a verb but is worth keeping:
+
+- A world clock as level furniture - an anchor on a deterministic path, as a
+  timing gate on the existing verb - is honest and assist-free. Like the jam,
+  it is furniture, and it says so.
+- Rock within reach of a hanging body is a swing *limiter*, not an amplifier:
+  a pump reaches 179.8 deg in open air and 84.7 deg with a wall 1.0 m off.
+  Useful for the crag's hang geometry.
+- The loaded line is drawn bending over ledges and then ignored by the tether
+  (176 deg of deflection moves the body 2 cm). A path-aware tether would be an
+  honesty fix for crag hangs, not a mechanic.
+
+Three things the panel found that are bugs, filed here and deliberately not
+fixed in the same breath, because each changes feel and breaks the tapes and
+that decision belongs to the developer:
+
+1. **The payout ratchet is not a ratchet.** `PAYOUT_TICKS` (15) governs only
+   the *first* segment of a betrayal: `_advance_pin` never resets
+   `a_paytick[k]`, so every later segment pays on consecutive ticks. The "one
+   segment per quarter second, audibly" this file describes does not exist -
+   it is one quarter-second, then one per tick until the whip runs off its
+   end. Measured on a real thrown lock: pin 19 to 24 in 5 ticks.
+2. **The handle can push into rock with the hand open** and lift the body
+   0.63-1.29 m. `push_cap = 0` closes it at ~6% of crawl speed.
+3. **The audio renders a number that is not the load.** The tension voice is
+   driven by the pendulum estimate; the true wrap load is the tether's.
+
 ## Design contracts (do not "improve" these away)
 
 - No RNG in the sim; bit-identical replays on the same build.

@@ -55,9 +55,16 @@ Before blaming the sim for a drop, check the byte.
 - The arc drawn at an anchor is the measured wrap angle (present-state
   instrumentation, not a prediction). **Amber** = partial — it will catch you,
   then betray you: under load it pays one segment of rope through the wrap
-  every quarter second, audibly, until the whip runs off its own end. How long
-  that takes is how much tail you caught it with — about a second from a tip
-  catch, longer from a deep one. **Green** = the rope has crossed itself on the
+  every quarter second (`PAYOUT_TICKS`, 15 ticks — measured 15.0 ticks per
+  segment on searched throws), audibly, until the whip runs off its own end.
+  How long that takes is how much tail you caught it with: the last pin that
+  can advance is chain index 23 of 25, so from the first segment a wrap
+  pinned at 21 has at most 0.75 s before it slides off, at 17 1.75 s, at 13
+  2.75 s — at most, because only loaded ticks count (touching down pauses
+  it) and a slow ratchet leaves time for the wrap to unwind off the beam
+  instead. (Until `_advance_pin` re-armed the timer per segment this was one
+  quarter second and then one segment per tick — a snap, not a slide; see
+  *One-to-beam*.) **Green** = the rope has crossed itself on the
   beam — locked, it holds anything until you unwind it or open your hand.
   Green is exactly the sim's own verdict and nothing more. It used to demand a
   second thing — enough tail past the pin — and on a recorded session that
@@ -178,7 +185,7 @@ The corpus in `tapes/`, and what each is shown to contain:
 | `crawl` | 660 | the lash gait on flat ground; no beam involved |
 | `reset` | 540 | **R** pressed mid-run — the one input that is not (cursor, grip) |
 | `school` | 779 | throw A0 from a standstill, catch, **lock**, hang, pump, **dismount** |
-| `betray` | 797 | a partial wrap **catches**, **pays out**, **slides off**, you crawl on |
+| `betray` | 825 | a partial wrap **catches**, **pays out**, **slides off**, you crawl on |
 | `door` | 4003 | **crawl 23 m**, catch the door beam over the lip, hang, pump, **fall** 2.7 m to tier 1 |
 
 No tape is written that does not replay, and none that is vacuous: each declares
@@ -684,7 +691,7 @@ must pass before a commit:
 | gate | must print | what it holds |
 |---|---|---|
 | `hashrun.gd` | `hash 2762505307938286422` | the golden session, the number three other tests carry |
-| `tape_verify.gd` | `PASS  6 tapes, 7679 ticks` | the game still does what it did yesterday |
+| `tape_verify.gd` | `PASS  6 tapes, 7707 ticks` | the game still does what it did yesterday |
 | `sim_test.gd` | `PASS` | G1–G7 above |
 | `save_test.gd` | `PASS` | snapshot and resume are bit-identical |
 | `bb_det.gd` | `PASS` | G2 asked of the body-against-beam path, which the corpus never exercises |
@@ -852,9 +859,26 @@ contradicted the obvious guess:
   threshold and then waits out a 0.3 s cooldown, so the overshoot *at the bang*
   is only 1.00–2.42x (p50 1.19). A loudness ramp built to 3.57 would have put
   the median crack 8% of the way up it.
-- **A wrap you are on is never unloaded.** Measured, tension never falls below
-  45.9 N while a wrap is engaged, so the load voice thins at the dead point of a
-  swing — it does not go silent.
+- **The load is the arm's, not the pendulum's.** The load voice first rendered
+  a rigid-pendulum estimate from the body's kinematics, T = M(v²/L + g cos),
+  which over the corpus ran 45.9–232.1 N and never fell below 45.9 N while a
+  wrap was engaged — so the hum had a floor and "a wrap you are on is never
+  unloaded" was written here. Both were properties of the estimate. The body
+  in this sim hangs on an *arm* (`SPRING_K` 340 capped at `F_MAX` 320, plus
+  the one-sided tether at `arm_max`), and the rope carries whatever the arm
+  delivers. The voice now renders that force — `av_arm`, the spring plus the
+  tether's projection impulse summed over the tick's substeps — and on the
+  player's own session (`takes/bug1.tape`, 3999 engaged ticks) it reads min
+  0.2, p50 43.8, p90 320.0, p95 320.0, p99 594.7, max 3163 N against the
+  estimate's p50 79.7, p95 260.3, max 1835 N; per engaged episode the peak is
+  p50 407 N, p95 2264 N. The p90 is `F_MAX` exactly — the spring saturates
+  there and everything above it is the tether's yank, the catch and the
+  fall-arrest — so the ramp tops at 320 N (`LOAD_HI`; the air ramp's rule,
+  p90 at the top) and its floor is 0 (`LOAD_LO`), because a wrap engaged with
+  the feet on the floor carries 0.2 N and the hum now says so. The sim did
+  not move: `aud_gate` A2 still hashes `2762505307938286422` with the pass
+  forced on, because `av_arm` is derived from a finished substep, feeds
+  nothing back, and sits in `SNAP_SKIP`.
 
 **Every voice has a visual twin driven by the same number on the same tick**, so
 a deaf player reads the same instrument rather than a worse one:
@@ -862,7 +886,7 @@ a deaf player reads the same instrument rather than a worse one:
 | voice | what it renders (present state) | visual twin |
 |---|---|---|
 | air whoosh | tip speed, 2–30 m/s | halo at the tip, same ramp |
-| load hum | newtons on the wrap, 40–240 N | the loaded leg of the rope glows |
+| load hum | newtons through the arm into the wrap, 0–320 N | the loaded leg of the rope glows |
 | ground grit | contacts resolved this tick | a pip on each touching particle |
 | crack | overshoot past `CRACK_SPEED` | tip flash, sized by the same number |
 | winding tick | each half turn on the beam | the half-turn dots on the arc |
@@ -974,18 +998,38 @@ Salvage from the panel that is *not* a verb but is worth keeping:
 
 Three things the panel found that are bugs, filed here and deliberately not
 fixed in the same breath, because each changes feel and breaks the tapes and
-that decision belongs to the developer:
+that decision belongs to the developer. Two of them have since been fixed, on
+the developer's call, and the measurements are beside them:
 
-1. **The payout ratchet is not a ratchet.** `PAYOUT_TICKS` (15) governs only
-   the *first* segment of a betrayal: `_advance_pin` never resets
-   `a_paytick[k]`, so every later segment pays on consecutive ticks. The "one
-   segment per quarter second, audibly" this file describes does not exist -
-   it is one quarter-second, then one per tick until the whip runs off its
-   end. Measured on a real thrown lock: pin 19 to 24 in 5 ticks.
+1. **The payout ratchet was not a ratchet.** `PAYOUT_TICKS` (15) governed
+   only the *first* segment of a betrayal: `_advance_pin` never reset
+   `a_paytick[k]`, so every later segment paid on consecutive ticks. The "one
+   segment per quarter second, audibly" this file describes did not exist -
+   it was one quarter-second, then one per tick until the whip ran off its
+   end. Measured on a real thrown lock: pin 19 to 24 in 5 ticks. **Fixed:**
+   `_advance_pin` resets the timer per segment, and a fresh catch starts a
+   fresh timer (2 of the 30 catches on `takes/bug1.tape` had engaged carrying
+   a stale one, which would have paid on their first loaded tick). Measured
+   on searched throws at the r 0.22 and r 0.11 beams: 15.0 ticks per segment,
+   4.00 segments/s. A pin at 23 now takes 15 ticks from its first segment to
+   sliding off where it took 1; the pin-20 rig, which paid four segments in
+   4 ticks and slid off, paid two a quarter second apart and unwound at tick
+   16. With the last advancing pin at 23, a partial pinned at index 13 has
+   at most 165 ticks (2.75 s) of loaded betrayal, at 17 105 ticks (1.75 s),
+   at 21 45 ticks (0.75 s). The red ratchet pulse and the rasp already fired
+   once per segment; at one segment per tick they merged into a buzz and one
+   glow, and a quarter second apart they are countable (`aud_gate` A3: 12
+   audible events, 12 twinned, unchanged). Only `betray.tape` carried
+   a payout and it was re-recorded (797 → 825 ticks, census unchanged: catch
+   1 lock 1 pay 2 slide 1); the other five and the golden hash did not move.
 2. **The handle can push into rock with the hand open** and lift the body
-   0.63-1.29 m. `push_cap = 0` closes it at ~6% of crawl speed.
-3. **The audio renders a number that is not the load.** The tension voice is
-   driven by the pendulum estimate; the true wrap load is the tether's.
+   0.63-1.29 m. `push_cap = 0` closes it at ~6% of crawl speed. Not fixed.
+3. **The audio rendered a number that was not the load.** The tension voice
+   was driven by the pendulum estimate; the true wrap load is the tether's.
+   **Fixed:** the voice renders `av_arm`, the force the body puts through the
+   arm - see *Sound is instrumentation* for the measured range. The hash did
+   not move; the meter costs a vector add per tether projection and one
+   length per substep.
 
 ## Design contracts (do not "improve" these away)
 

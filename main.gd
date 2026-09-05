@@ -172,8 +172,9 @@ var a_half := PackedInt32Array()      # last half-wrap count (for tick sfx)
 #    briefed "it catches, then betrays" and it is what makes a near-miss
 #    readable rather than nothing;
 #  - a partial wrap pays MATERIAL through the pin, one segment per
-#    PAYOUT_TICKS, while loaded: the betrayal is a visible, audible ratchet
-#    that ends with the whip sliding off its own tail;
+#    PAYOUT_TICKS of load (the timer re-arms per segment, measured 15.0
+#    ticks/segment): the betrayal is a visible, audible ratchet that ends
+#    with the whip sliding off its own tail;
 #  - a wrap classified locked (_pinch true for PINCH_RUN consecutive ticks
 #    inside LOCK_WINDOW - the self-crossing, never an angle) freezes payout -
 #    it is committed;
@@ -220,13 +221,30 @@ var a_whi := PackedInt32Array()
 # inextensible in both modes, a wrap holds whether or not you grip, and the
 # grip button is decorative.
 const PAYOUT_TICKS := 15              # ticks between one segment paying
-                                      # through a slipping partial wrap.
-                                      # Raised from 8 when the pin re-seat
-                                      # landed: re-seating removed the wasted
+                                      # through a slipping partial wrap - a
+                                      # ratchet, 4 segments a second, and now
+                                      # actually one: _advance_pin resets the
+                                      # timer per segment (it did not, and the
+                                      # betrayal was one quarter second and
+                                      # then a snap). Measured on searched
+                                      # throws: 15.0 ticks/segment, and the
+                                      # last pin that can advance is 23
+                                      # (NP - 2 - TAIL_MIN), so from its
+                                      # first segment a partial pinned at 13
+                                      # has at most 165 ticks (2.75 s) before
+                                      # it slides off, at 17 105 (1.75 s), at
+                                      # 21 45 (0.75 s), at 23 15 (measured:
+                                      # 15, where it was 1). At most, because
+                                      # only loaded ticks count and a slow
+                                      # ratchet gives the wrap time to unwind
+                                      # under th_rel first - the pin-20 rig
+                                      # paid two segments and unwound at
+                                      # tick 16, where it used to pay four in
+                                      # 4 ticks and slide off. Raised
+                                      # from 8 when the pin re-seat landed:
+                                      # re-seating removed the wasted
                                       # teleport, which shortened the visible
-                                      # betrayal from 56 to 39 ticks. This
-                                      # restores it - the betrayal has to be
-                                      # long enough to read as losing.
+                                      # betrayal from 56 to 39 ticks.
 # THE JAM ANCHOR. 1 = this anchor supplies the self-crossing itself; see
 # _pinch. LEVEL data, rebuilt by _build_level on every boot, so it is in
 # SNAP_SKIP and deliberately NOT in level_fingerprint: adding a field to that
@@ -474,12 +492,18 @@ var sfx_let: AudioStreamPlayer        # you opened your hand / it unwound clean
 # EVERY CURVE IS FITTED TO MEASURED DATA, not to a guess. The probe that took
 # these numbers (aud_probe: a corpus replay reporting the distribution of each
 # driver over the 7679 tape ticks) was NEVER COMMITTED - the numbers stand as
-# the record, and tests/aud_gate.gd A5 re-reads the load range on every run
-# (45.8-232.1 N today; the 45.9 below is the same floor at the other rounding).
+# the record, and tests/aud_gate.gd A5 re-reads the load range on every run.
 # What it found, and what the ranges below are built on:
 #   tip speed       p50   8.6   p90  29.2   p99  53.2   max  85.7  m/s
-#   wrap tension    min  45.9   p50  67.7   p90 157.1   max 232.1  N (wrapped)
 #   ground scrape   p50  18.5   p90  54.9   p99 108.9   max 276.8  (sum m/s)
+# The load voice's driver was re-measured when it changed from the pendulum
+# estimate to the arm force (av_arm, see _substep), on the player's own
+# recorded session (takes/bug1.tape, 3999 engaged ticks) and on the corpus:
+#   arm force, session   min 0.2  p50  43.8  p90 320.0  p99 594.7  max 3163  N
+#   arm force, corpus    min 1.9  p50  10.7  p90 220.7  p99 320.0  max 2362  N
+#   pendulum, session    min 0.0  p50  79.7  p90 158.5  p99 617.6  max 1835  N
+# The p90 on the session is F_MAX exactly: the spring saturates there, and
+# everything above it is the tether's yank - the catch and the fall-arrest.
 const AV_AIR := 0
 const AV_LOAD := 1
 const AV_GRIT := 2
@@ -489,12 +513,15 @@ const AIR_LO := 2.0                   # m/s of tip: below this, no air noise
 const AIR_HI := 30.0                  # m/s: the measured p90 tops the ramp
 const AIR_DB := Vector2(-42.0, -12.0)
 const AIR_PITCH := Vector2(0.55, 2.40)
-# The tension floor is MEASURED, not chosen: over the corpus a wrap that is
-# engaged at all never carries less than 45.9 N, so the hum does not fall
-# silent at the dead point of a swing - it thins. That is the honest reading;
-# a rope you are hanging on is never unloaded.
-const LOAD_LO := 40.0
-const LOAD_HI := 240.0
+# The load ramp tops at F_MAX, for two reasons that turn out to be the same
+# number: it is the p90 of the arm force over the player's recorded session
+# (the air ramp's rule, AIR_HI at the measured p90), and it is where the
+# spring saturates, so a hum at the top of its range means the arm is at
+# its cap and any more is the tether. The floor is zero because the arm's
+# is: a wrap engaged with the feet on the floor carries 0.2 N, and the old
+# 45.9 N floor was a property of the pendulum estimate, not of the load.
+const LOAD_LO := 0.0
+const LOAD_HI := 320.0
 const LOAD_DB := Vector2(-33.0, -13.0)
 const LOAD_PITCH := Vector2(0.80, 1.85)
 const GRIT_LO := 4.0
@@ -527,6 +554,11 @@ var av_on := false                    # only a real windowed session; the probes
 var av_touch := PackedByteArray()     # per particle: touched terrain this tick
 var av_scrape := 0.0                  # m/s summed over particles in contact
 var av_tension := 0.0                 # N carried by the load-bearing wrap
+var av_arm := 0.0                     # N the body put through the arm this
+                                      # tick: |spring + tether impulse| summed
+                                      # over the substeps, divided by DT
+var av_armc := Vector2.ZERO           # the tether's position correction,
+                                      # summed over one substep's sweeps
 var av_lidx := -1                     # chain index the load runs out to
 var av_over := 0.0                    # last crack's overshoot past CRACK_SPEED
 var av_flash0 := 0.0                  # previous crack_flash (the crack's edge)
@@ -1731,12 +1763,14 @@ func step_tick(cursor_world_m: Vector2, grip: bool) -> void:
 	_cull_tick()
 
 	var max_tip := 0.0
+	av_arm = 0.0
 	for s in SUB:
 		_substep()
 		var v := (pos[NP - 1] - prv[NP - 1]).length() / SDT
 		if v > max_tip:
 			max_tip = v
 	tip_speed = max_tip
+	av_arm /= DT    # impulse over the tick -> the tick's mean force, N
 
 	_measure_wraps()
 	_update_locks()
@@ -1780,6 +1814,15 @@ func _substep() -> void:
 				_solve_rope(i, stiff)
 		_solve_lra()
 	_collide()
+	# WHAT THE ARM DELIVERED THIS SUBSTEP, as a force on the handle: the
+	# spring (already capped) plus the tether's projection, which is a
+	# position correction and converts back to a force as corr / SDT^2 (the
+	# body's share is corr * wb, its impulse BODY_M * corr * wb / SDT =
+	# corr / SDT, and the two shares are one internal pair). Summed as an
+	# impulse over the tick and read by _av_tick alone; it is in SNAP_SKIP
+	# and nothing in the sim reads it (aud_gate A2 holds the hash).
+	av_arm += (f - av_armc / (SDT * SDT)).length() * SDT
+	av_armc = Vector2.ZERO
 
 func _solve_arm() -> void:
 	var d := pos[0] - body_pos
@@ -1790,6 +1833,7 @@ func _solve_arm() -> void:
 		var corr := d * ((l - arm_max) / l / (w0 + wb))
 		pos[0] -= corr * w0
 		body_pos += corr * wb
+		av_armc += corr
 
 func _solve_rope(i: int, stiff: float) -> void:
 	var d := pos[i + 1] - pos[i]
@@ -2542,6 +2586,12 @@ func _update_locks() -> void:
 				a_pend[k] = 0
 				a_minth[k] = th
 				a_prun[k] = 0
+				# A fresh catch starts a fresh ratchet. The timer used to
+				# survive a slide-off, so an anchor that had already betrayed
+				# once paid its first segment on the first loaded tick of the
+				# next catch: 2 of the 30 catches on the player's recorded
+				# session (takes/bug1.tape) engaged carrying a stale timer.
+				a_paytick[k] = 0
 				# snapshot which chain is in this wrap, as offsets from the pin
 				var wlo := li
 				var whi := li
@@ -2672,6 +2722,15 @@ func _advance_pin(k: int) -> void:
 		# single-frame jump, and seen as the rope twitching on its own.
 		a_pinpt[k] = a_pos[k] + (pos[old + 1] - a_pos[k]).normalized() 			* (a_r[k] + p_rad[old + 1])
 		a_freelen[k] = minf(a_freelen[k] + rest[old], cum_len[old + 1])
+		# THE RATCHET RE-ARMS HERE, and for a long time it did not. The timer
+		# was reset only at level reset and while locked, so PAYOUT_TICKS
+		# governed the FIRST segment of a betrayal and every later one paid on
+		# the next tick: measured on a searched throw, pin 19 to 24 in 5
+		# ticks, and the betrayal the player felt was a snap. Reset per
+		# segment it is the ratchet the comment above always described - one
+		# segment every PAYOUT_TICKS, measured 15.0 ticks/segment (4.00
+		# segments/s) on the r 0.22 and r 0.11 beams alike.
+		a_paytick[k] = 0
 
 func _events() -> void:
 	crack_cooldown = maxf(0.0, crack_cooldown - DT)
@@ -3005,23 +3064,26 @@ func _holds(k: int) -> bool:
 	return a_freelen[k] >= 0.0 and a_locked[k] == 1
 
 func _wrap_tension() -> float:
-	# WHAT THE WRAP IS CARRYING, in newtons, this tick: your weight resolved
-	# along the rope plus the centripetal term of the arc you are actually on.
+	# THE PENDULUM ESTIMATE of what the wrap is carrying, in newtons: your
+	# weight resolved along the rope plus the centripetal term of the arc you
+	# are on, as if the body hung on the rope itself.
 	#
 	#     T = M ( v_perp^2 / L  +  g cos(rope, down) )
 	#
-	# THIS IS NOT A WARNING, and it is worth being exact about why, because a
-	# tension cue is the obvious place to smuggle in a prediction. In this sim
-	# a partial wrap betrays on a fixed timer (PAYOUT_TICKS) and a locked one
-	# never lets go at all, so tension has NO bearing whatever on whether the
-	# wrap survives. It cannot forecast a failure because it does not cause
-	# one. What it renders is the single thing a hanging player has no way to
-	# see: how hard they are pulling, and therefore where in the swing they
-	# are. Measured over the corpus it runs 45.9 N at the thinnest to 232.1 N
-	# at the bottom of a hard swing - a 5x span that a static hang sits in the
-	# lower third of.
+	# IT IS NOT THE LOAD, and it no longer drives the load voice. The body in
+	# this sim does not hang on the rope; it hangs on an ARM - SPRING_K capped
+	# at F_MAX plus the one-sided tether at arm_max - and the rope carries
+	# whatever the arm delivers, which is dominated by transients the pendulum
+	# never sees: the catch yank and the fall-arrest. Measured on the player's
+	# own session (takes/bug1.tape, 3999 engaged ticks) this estimate reads
+	# p50 79.7 N, p95 260.3 N, max 1835 N while the arm reads p50 43.8 N,
+	# p95 320.0 N, max 3163 N - lower in the hang, where the arm is slack and
+	# this formula still charges the full weight, and far higher in the yank.
+	# The two disagree most exactly when the load matters. The voice renders
+	# av_arm (see _substep); this stays as the instrument tests/lab_throw.gd
+	# reads the swing with - a pure function of the finished tick, writing
+	# nothing.
 	var best := 0.0
-	av_lidx = -1
 	for k in a_pos.size():
 		if a_freelen[k] < 0.0:
 			continue
@@ -3034,7 +3096,6 @@ func _wrap_tension() -> float:
 		var t := BODY_M * (vp / l + GRAV.y * u.y)
 		if t > best:
 			best = t
-			av_lidx = a_pinidx[k] if a_pinidx[k] >= 0 else a_lockidx[k]
 	return best
 
 func _av_tick() -> void:
@@ -3065,11 +3126,31 @@ func _av_tick() -> void:
 	av_lvl_t[AV_GRIT] = sqrt(g)
 	av_pit_t[AV_GRIT] = lerpf(GRIT_PITCH.x, GRIT_PITCH.y, g)
 
-	# LOAD. Silent with no wrap; while there is one it never falls silent,
-	# because a wrap you are on is never unloaded (measured floor 45.9 N).
-	av_tension = _wrap_tension()
+	# LOAD. Silent with no wrap; while there is one it renders THE FORCE THE
+	# BODY IS PUTTING THROUGH THE ARM - the spring plus the tether's impulse,
+	# summed over the tick's substeps - because in this sim that is what the
+	# rope carries. The body does not hang on the rope; it hangs on an arm,
+	# and the wrap gets whatever the arm delivers. The voice used to render
+	# _wrap_tension's pendulum estimate instead, and the two are not the
+	# same number: on the player's own session the pendulum ran p50 80 N,
+	# p95 260 N, while the arm - dominated by the catch yank and the
+	# fall-arrest, not by the pump - reads what the range below records.
+	# Honest about the yank, and still not a warning: the load has no bearing
+	# on whether the wrap survives.
+	av_tension = 0.0
+	av_lidx = -1
+	for k in a_pos.size():
+		if a_freelen[k] >= 0.0:
+			av_tension = av_arm
+			av_lidx = a_pinidx[k] if a_pinidx[k] >= 0 else a_lockidx[k]
+			break
+	# The ramp is the air and grit voices' shape, square-rooted from zero:
+	# the old 0.28 floor encoded "a wrap you are on is never unloaded", which
+	# was true of the pendulum estimate (45.9 N at the dead point) and is not
+	# true of the arm - a wrap engaged with the feet on the floor carries
+	# 0.2 N, and a hum that said otherwise would be the twin of nothing.
 	var ld := clampf((av_tension - LOAD_LO) / (LOAD_HI - LOAD_LO), 0.0, 1.0)
-	av_lvl_t[AV_LOAD] = 0.0 if av_tension <= 0.0 else lerpf(0.28, 1.0, ld)
+	av_lvl_t[AV_LOAD] = sqrt(ld)
 	av_pit_t[AV_LOAD] = lerpf(LOAD_PITCH.x, LOAD_PITCH.y, ld)
 
 	# SLIP. The sim's own flag, which is already binary: it either is paying
@@ -3528,7 +3609,8 @@ const SNAP_SKIP := ["external_drive", "save_enabled", "save_path", "save_due",
 	# changed, by design, so a var added here without this line would refuse
 	# every committed tape and every save on disk, and it would be right to:
 	# it could not tell an audio field from a physics field.
-	"av_on", "av_touch", "av_scrape", "av_tension", "av_lidx", "av_over",
+	"av_on", "av_touch", "av_scrape", "av_tension", "av_arm", "av_armc",
+	"av_lidx", "av_over",
 	"av_flash0", "av_half", "av_eng", "av_hold", "av_lk", "av_pin", "av_burst",
 	"av_bcol", "av_brad", "av_lvl", "av_pit", "av_lvl_t", "av_pit_t"]
 

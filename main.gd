@@ -55,6 +55,17 @@ var arm_max := 1.15                   # m, one-sided body<->handle tether.
 const SPRING_K := 340.0           # handle spring toward cursor target
 const SPRING_C := 17.0            # handle spring damping (vs body-relative vel)
 const F_MAX := 320.0              # arm force cap ("panic saturates")
+const ALIGN_W := 0.75             # ALIGN: the fraction of the cursor's
+                                  # ACROSS-the-load component the shut fist
+                                  # refuses. 0.0 = the arm before this fix.
+const ALIGN_LOAD_EPS := 0.01      # m: on the ground the tether must be this
+                                  # close to taut before the load is real
+const ALIGN_DEAD := 0.001         # m: an across-the-load command smaller than
+                                  # this is not a command. The control surface
+                                  # is REACH across 138 physical pixels, so one
+                                  # screen pixel of hand is 8.3 mm: this dead
+                                  # zone is an eighth of the smallest movement
+                                  # the mouse can express.
 
 const BODY_M := 8.0               # body : whip mass ~ 8:1 (panel ruling)
 const BODY_R := 0.28
@@ -2201,6 +2212,7 @@ func step_tick(cursor_world_m: Vector2, grip: bool) -> void:
 	taut = grip
 	cursor_m = cursor_world_m
 	target_m = body_pos + (cursor_m - body_pos).limit_length(REACH)
+	_align_target()
 	if not finished:
 		run_ticks += 1
 	tick_count += 1
@@ -2228,6 +2240,87 @@ func step_tick(cursor_world_m: Vector2, grip: bool) -> void:
 
 func _body_vel() -> Vector2:
 	return (body_pos - body_prv) / SDT
+
+func _align_target() -> void:
+	# THE FIST LIES ALONG THE PULL. While the hand is shut on an engaged wrap
+	# that is actually CARRYING, the arm is not free to point wherever the mouse
+	# says. You can slide your grip along a loaded rope; you cannot hold your
+	# fist a metre off the line of the load, and for 22757 ticks of the player's
+	# own session it held one 0.771 m off it (p90 1.101, max 1.150 = REACH) with
+	# the rope leaving the fist backwards at a median 75.9 degrees. The tether
+	# in _solve_lra fixes the handle's DISTANCE from the pin and exerts NO
+	# tangential force, so the handle slides round that circle to wherever the
+	# arm spring's tangential pull vanishes - the pin->cursor line - and the
+	# rope's first segment is left to flail against a fist that turns a third
+	# as fast as it does. That is the jank, in one number: turn ratio 0.33.
+	#
+	# So drop the part of the commanded target that lies ACROSS the load line
+	# pin->body and keep the part ALONG it. ALONG is where the pump lives: the
+	# pump is a pendulum-LENGTH command, radial about the pin, and radial IS the
+	# load line - which is why this costs the pump nothing.
+	#
+	# ONCE PER TICK, from this tick's target_m and this tick's body_pos, BEFORE
+	# the substep loop. A per-substep version was written first and is wrong:
+	# body_pos travels 3-5 cm inside one tick, so by the last substep a PARKED
+	# cursor sits that far off the body and the projection threw the offset
+	# away - the state hash diverged at tick 1 on a player who was doing
+	# nothing. Computed here, a parked cursor gives target_m == body_pos, the
+	# across component is exactly zero, and the tick is bit-identical to the
+	# arm without this fix.
+	if not taut or ALIGN_W <= 0.0:
+		return
+	var d := target_m - body_pos
+	if d.length_squared() < 1e-12:
+		return
+	# The tightest LOADED tether is the one carrying you.
+	var best := -1
+	var best_s := 0.0
+	var pt := Vector2.ZERO
+	for k in a_pos.size():
+		if a_freelen[k] < 0.0:
+			continue                       # not engaged: no load line to lie on
+		var lp: Vector2
+		if a_pinidx[k] >= 0:
+			lp = a_pinpt[k]
+		else:
+			var li := a_lockidx[k]
+			if li < 0:
+				continue
+			lp = a_pos[k] + (pos[li] - a_pos[k]).normalized() * a_r[k]
+		var slack := pos[0].distance_to(lp) - a_freelen[k]
+		# LOADED. Airborne IS the load - the same ruling the payout ratchet
+		# makes at _update_locks - or the tether is within ALIGN_LOAD_EPS of
+		# full extension. A hand resting on the ground with rope to spare is
+		# untouched, and so is a crawl.
+		if grounded and slack < -ALIGN_LOAD_EPS:
+			continue
+		if best < 0 or slack > best_s:
+			best = k
+			best_s = slack
+			pt = lp
+	if best < 0:
+		return
+	var r := body_pos - pt
+	var l := r.length()
+	if l < 0.05:
+		return
+	var u := r / l
+	var across := d - u * d.dot(u)
+	# THE DEAD ZONE, and it is not a fudge: a command already ON the load line
+	# must be left alone EXACTLY, not to within a rounding error. The pump is
+	# such a command - a pendulum-LENGTH stroke, radial about the pin - and
+	# without this line the projection returned float dust on every pumping
+	# tick. Dust is not nothing here: this sim is chaotic, and its own pump
+	# bench moves "over the top" from 2.0 s to 3.8 s under a 1e-4 DEGREE change
+	# in the start angle (tests/pump4.gd). A micron of dust per tick was enough
+	# to walk the bench off its trajectory and make it unreadable. At a
+	# sub-pixel dead zone tests/bot_pump.gd's pump with the starter off - the
+	# pure radial parametric drive - is BIT-IDENTICAL on all four rigs to the
+	# arm without this fix, and every difference the bench does show is
+	# attributable to the one command ALIGN means to refuse.
+	if across.length() < ALIGN_DEAD:
+		return
+	target_m -= across * ALIGN_W
 
 func _substep() -> void:
 	# --- forces -> integrate (verlet) ---

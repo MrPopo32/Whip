@@ -706,6 +706,8 @@ inspector:
 | `Goal` (Marker2D) | the flag | optional: absent = a bench with no finish, like the lab |
 | `Camera/…` (Line2D, 2 points) | optional camera volumes: the two points on a tier's floor, x0 to x1 | `whip_camvol.gd`: `zoom`. **Leave it out** and the table is derived from the floors - see below |
 | `Backdrop/…` (Polygon2D) | paint, drawn in order under the terrain | `color` |
+| `Art` (Node2D) | optional. **Everything under it renders live, as authored** - a Sprite2D, a textured Polygon2D or Line2D, an AnimatedSprite2D, a ParallaxBackground, particles, a shader material - and the loader reads nothing from it. See **Adding art** | none: it is not read |
+| `Anchors/<marker>/…` | children of an anchor's Marker2D render live at the beam (a sprite of it); the marker's own disc does not | as above |
 
 **Units are pixels at 60 px/m** - the scale `_draw` renders at - because the
 editor's grid, zoom range and gizmos assume pixel-sized scenes (a 60 m level
@@ -859,6 +861,170 @@ Both levels photographed through the real `_draw` with `crag_shots.gd` /
 hardcoded crag's table says), the steps' KNOB green at the catch (θ 7.26 rad)
 and amber, paying out, 100 ticks later (θ 3.16).
 
+### Adding art
+
+Until this section existed nothing with a texture could appear. `_build_scene`
+instantiates the level, `_level_read` copies the collision into the sim's
+arrays, and the instance is **freed** - so a Sprite2D, a textured Polygon2D, a
+ParallaxBackground, anything an artist would make, was silently ignored. The
+fix follows the audio's contract to the letter (see "Sound is
+instrumentation"): art exists only in a real windowed session, it feeds nothing
+back, and a probe never sees it. `tests/art_gate.gd` A1-A7 is the proof.
+
+**How it works.** In `_ready`, behind the same `DisplayServer.get_name() !=
+"headless"` test that decides whether a session has a screen, `main.gd`'s
+`_art_build` instantiates the level scene a **second** time and adds that
+instance as a child that draws **behind** the game's own `_draw`
+(`show_behind_parent`: same canvas, same z-index, the child's commands first
+- so it scrolls with the Camera2D and sits under the HUD layer with no
+transform anywhere; the scene is authored at 60 px/m, which is `_draw`'s own
+scale). A second instance and not the first kept alive, because the first is
+read inside `setup_sim`, which every headless probe runs and which runs before
+`_ready`; keeping it would hand every probe a node graph, and the read path
+would no longer be the lines it was. As it stands `_build_scene` and
+`_level_read` did not change, and `level_fidelity` F1 (the crag round-trips to
+1132405890178884573 with every array identical) and `art_gate` A3 prove it
+rather than argue it. The cost is one instantiate at boot: **6.0 ms** on
+`steps_art`, 0.002 ms on a built-in level.
+
+**What renders and what does not.** In the live instance everything the sim
+already represents is removed - `Ground`, `Islands`, `Spawn`, `Goal`,
+`Camera`, `Backdrop`, and anything else at the root the schema does not name -
+so nothing is drawn twice and the `@tool` helper drawings (the anchor's disc,
+the terrain's air-side pips) never reach the game. Two things stay:
+
+- **`Art` (Node2D), whole.** Everything under it is drawn by Godot as
+  authored: Sprite2D, Polygon2D with a texture (`texture_repeat` on for a
+  tile), Line2D with a texture (`texture_mode` TILE), AnimatedSprite2D,
+  ParallaxBackground with ParallaxLayers, CPUParticles2D, a Node2D with a
+  shader material. The loader reads **nothing** from it - not a coordinate,
+  not a colour - so it cannot reach the fingerprint, the hash or any gate.
+  Keep `z_index` at 0 inside it: the layer draws behind `_draw` at the same
+  z, and a positive z_index would put art over the rope and the ring.
+- **`Anchors`, with each marker's own drawing hidden** (`self_modulate`,
+  which stops at the node and does not reach its children). A Sprite2D
+  parented to an anchor's Marker2D draws at the beam; the marker's disc does
+  not; the ring is drawn over both by `_draw`.
+
+**The one-line rule: the Line2D is the collision; Art is free.**
+
+**The greybox toggle.** Once a level has art, the grey collision band, the
+fillet arcs, the flat backdrop and the anchor discs are noise over it. The
+root's `whip_level.gd` has `greybox` (default `true`). At `false`, `_draw`
+skips the **WORLD** - terrain lines, arcs, backdrop polygons, anchor discs -
+and keeps the **INSTRUMENTATION**: the wrap ring and its pulses, the jam
+collar, the caption, the goal flag, the rope and the load along it, the
+ground contacts, the tip, the body, the hand, the crosshair, the working-zone
+ring. `_draw` is written as those two named blocks. An anchor's ring draws at
+the anchor whether or not its disc does - the ring is the game's honest
+instrument, it has been fixed for lying twice, and art does not get to hide
+it. `greybox` is read off the live instance by `_art_build`, never by the
+loader, so it cannot touch the fingerprint; the default leaves every existing
+level and every rendered frame byte-identical - `art_gate` A4 takes
+`tests/art_frame.gd`'s picture of `steps` and of `crag.tscn` and requires the
+md5 the same command printed on `main.gd` before the layer existed
+(`fc7de3e8a733c941bcc33ca41d335f37`, `9707c2f48d53452be10fffb3726cb0dc`).
+
+**Parallax works under the game's camera.** ParallaxBackground is a
+CanvasLayer that listens to the Camera2D of its viewport, and the art layer
+is in that viewport. Measured (`art_gate` A6): the camera moved +600 px, the
+world moved -600 on screen, the `Far` layer (`motion_scale` 0.3) moved
+-180.0 px and the `Mid` layer (0.6) -360.0 - read off the ParallaxLayer nodes,
+and again off the pixels, where the far skyline's peak went from x 985 to
+805. **Where a layer's content lands on screen** is the part nobody can
+derive from Godot's docs, so here it is, measured: a ParallaxLayer at
+`motion_scale` *s* puts its own origin at screen position
+`s * ((800, 450) - camera_px)`, x wrapped by `motion_mirroring`, where
+`camera_px` is the Camera2D's position in pixels. At spawn on `steps` the
+camera sits at about (-401, 132), so a layer at *s* = 0.15 has its origin at
+screen (180, 87) - and a moon authored at (0, -260) "in screen pixels" is off
+the top of the frame (measured: zero pixels). Authored at (20, -17) it sits at
+(600, 150) and moves -90 px for +600 px of camera, which is 0.15x. A layer at
+motion_scale 0 is glued to the screen. Set `motion_mirroring` to the scaled
+texture width to tile it. The camera's spawn position is level-specific; the
+quickest way to place a layer is to run the level, note where the camera is
+(`cam_st` in a probe, or just look), and put the origin where you want it.
+
+**The placeholder pack and the worked example.** `levels/art/` holds three
+generated PNGs - `rock.png` (256 x 256, tileable), `beam.png` (96 x 64, an
+iron plate with a wooden bar), `cliff.png` (1024 x 384, a periodic skyline
+with one peak) - made by `tests/art_pack.gd` from an integer hash, no RNG, so
+the bytes regenerate identically anywhere. They are placeholders; their one
+virtue is that each is a colour nothing else in the frame has, which is what
+`art_gate` A5 samples. Their `.import` sidecars are committed; a fresh clone
+needs one `--headless --import` before a scene can load them.
+
+**Practicalities, each one measured by dropping a PNG in and watching:**
+
+- **PNGs can live anywhere under `res://`**; `levels/art/` is a convention,
+  not a requirement. The scene references them by path.
+- **A newly added PNG needs an import pass before it will load** - either
+  open the project in the editor once, or run
+  `--headless --path . --import`. Skip it and the console prints the engine's
+  `No loader found for resource ... (expected type: Texture2D)` and the
+  sprite is instantiated with no texture while the rest of the level renders.
+  It is survivable and it is Godot's message, not ours.
+- **Pixel art needs `texture_filter` = Nearest** on the node (or in the import
+  preset). The default is linear, and a 15 px checker blends at every cell
+  edge.
+- **Textures over 16384 px on a side render as a black slab.** The engine
+  imports them and then refuses at load with `p_width > 16384`; there is no
+  game-side message.
+- **Dress `crag.tscn`, not `--level crag`.** The built-in names (`lab`,
+  `crag`, and the traverse) never build an art layer - they have no scene. A
+  copy of `levels/crag.tscn` with an Art node is the crag with art on it,
+  same fingerprint.
+- **Three rules are enforced, not advised** (`art_gate` A8-A10). A node under
+  `Ground` or an island that is not a fillet marker refuses the level by name
+  and says where art goes - before this, a sprite parented to Ground by habit
+  was silently read as a fillet of radius 0 and moved the collision
+  fingerprint. A positive `z_index` under Art, or a CanvasLayer at layer 0
+  or above, is clamped on the console: nothing under Art may draw over the
+  rope, the body, the rings or the HUD. And `greybox = false` on a level with
+  no Art node keeps the grey world on, because a level where the only sign
+  of a floor is where the rope lies is not playable. A root node the schema
+  does not name (a `Props`, say) is neither collision nor picture: it is
+  dropped with a console line naming it.
+`levels/steps_art.tscn` is `steps.tscn` with `greybox = false` and an `Art`
+node that uses all of it: a textured Line2D along the ground edge (its points
+offset 8 px into the rock, because a Line2D is centred on its points and the
+collision line is the band's top edge), a textured Polygon2D face under the
+floors, a Sprite2D child on `A0_BEAM` and `A3_THIN_BEAM`, and a
+ParallaxBackground with two layers. Its collision is `steps`: fingerprint
+**3144857459313072037**, every array identical (A3), so the gate's verdict
+on `steps` carries over, and a `steps` save or snapshot restores into it.
+
+```
+... -s res://tests/art_gate.gd                  # A1 A2 A3, headless
+... -s res://tests/art_gate.gd -- out=DIR       # A1..A7, windowed, frames into DIR
+... -s res://tests/art_frame.gd -- level=steps  # one frame and its md5, windowed
+```
+
+A1 headless: 0 art nodes on a `steps_art` probe (the scene authors 9 under
+Art and 2 under anchors) · A2 the hash of 900 ticks on `steps_art` with the
+layer forced on equals the hash with it off equals plain `steps`
+(3057385326108183634), and the traverse's golden 2762505307938286422 stands ·
+A3 the fingerprint and 15 per-element comparisons · A4 the two md5s · A5
+pixels named and sampled: rock under the floor, the edge band, the sprite's
+bar at the anchor, its plate, the body over it all, the clear colour where
+nothing is authored, the skyline's peak and clear sky 20 px above it, and on
+a searched catch (stroke 19 of the 108 grid) the **green ring drawn over the
+sprite's plate** with the taut rope beside it · A6 above · A7 a windowed
+frame with the layer shown against hidden: **+0.02 ms CPU, +0.17 ms GPU**
+(0.14 + 0.63 ms against 0.12 + 0.46, vsync off, median of 80).
+
+What an artist still cannot do: put art anywhere but under `Art` or under an
+anchor's marker (a sprite parented to `Ground` is removed with it); draw over
+the instruments (the rope, the ring, the body are always on top - by design);
+change the HUD, the flag, the ring's colours or the caption font from the
+scene; animate anything from the sim's state (art reads nothing, so a beam
+cannot flex under load - that would be a new visual twin in `_draw`, by the
+audio's parity rule, not a scene node); make the backdrop polygons of the
+greybox appear together with art (at `greybox = false` they are off; paint
+them as Polygon2Ds under `Art` instead); or see the art in the editor at the
+same time as the physics - the editor shows the picture, `level_gate` shows
+the reach.
+
 ### What you cannot yet do from the editor
 
 - See the physics. The editor draws the rock, the beams at size and the air
@@ -919,6 +1085,7 @@ must pass before a commit:
 | `level_gate.gd -- level=<name>` | `PASS  level gate <name>: F T N A D S W R` | any level, drawn or hardcoded: see Building a level (R takes minutes; `quick` skips it) |
 | `mark_rt.gd` | `PASS  mark_rt` | the recorder and its marker do not lie — and no test writes the player's slot |
 | `mark_kind.gd` | `PASS  mark_kind` | F and G latch different kinds, and only under `--record` |
+| `art_gate.gd` | `PASS  art is a picture` | A1-A7 headless (A1-A3) or windowed (all): absent headless, inert, the same world, drawn under the instruments; see Adding art |
 
 Every test that puts `main.gd` in the tree sets its scratch `save_path`
 **after** `setup_sim()`, because `setup_sim()` re-derives the slot from the

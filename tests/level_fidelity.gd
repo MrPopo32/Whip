@@ -309,6 +309,11 @@ func f5() -> void:
 		["a fillet marker 0.50 m off its vertex",
 			scene(ground, [lump], anchors, Vector2(-5, -1), func(r: Node) -> void:
 				var mk := Marker2D.new()
+				# A fillet marker IS a Marker2D carrying whip_fillet.gd: the loader now
+				# refuses any other child of a terrain node by name (a bare marker or a
+				# sprite there used to be read as a fillet of radius 0 and move the
+				# fingerprint), so this fixture carries the script a real one carries.
+				mk.set_script(preload("res://levels/whip_fillet.gd"))
 				mk.name = "F"
 				mk.position = Vector2(6.5, 0.0) * 60.0
 				r.get_node("Ground").add_child(mk)), "drag it onto"],

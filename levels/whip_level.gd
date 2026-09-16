@@ -13,3 +13,11 @@ extends Node2D
 ## The caption block drawn top-left in the game. Empty = a title made from the
 ## file name and the one rule every level shares.
 @export_multiline var hud := ""
+## true: main.gd's _draw paints the WORLD - the grey terrain band, the fillet
+## arcs, the flat Backdrop polygons, each anchor's disc - over whatever the
+## scene's Art node draws. false: it paints none of that and the Art carries
+## the look. The INSTRUMENTATION - the wrap ring and its pulses, the jam
+## collar, the caption, the flag, the rope, the body, the crosshair - is drawn
+## either way; art does not get to hide the ring. Read off the live instance
+## by _art_build, never by the loader, so it cannot touch the fingerprint.
+@export var greybox := true

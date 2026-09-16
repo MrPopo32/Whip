@@ -25,3 +25,8 @@ run.save.tmp
 
 # bug takes: recorded human sessions, evidence not source
 takes/
+
+# Godot 4 script uid sidecars: levels/*.gd.uid are referenced by the .tscn files
+# and are committed; tests/ scripts run by path and never by uid
+tests/*.uid
+tests/**/*.uid

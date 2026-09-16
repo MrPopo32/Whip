@@ -556,6 +556,20 @@ const CRACK_PITCH := Vector2(0.85, 1.45)
 # thing this cue is allowed to mean.
 const CRACK_OVER := 2.42
 
+# THE ART LAYER is not simulation state either, by the audio's own argument,
+# and it goes one further: it has no per-tick code at all. A live instance of
+# the level scene sits in the tree behind _draw (see _art_build) and nothing
+# in this file reads a pixel of it. Both names are in SNAP_SKIP.
+var art_on := false                   # a windowed session only, like av_on
+var art_root: Node                    # the live instance; null in every probe
+var greybox := true                   # _draw paints the WORLD - terrain
+                                      # lines, arcs, backdrop, anchor discs.
+                                      # false = the scene's Art carries it.
+                                      # Read off the live instance by
+                                      # _art_build, so a probe, which has no
+                                      # _ready, keeps the default and paints
+                                      # the frame it always painted
+
 # NONE OF THIS IS SIMULATION STATE. It is all named in SNAP_SKIP, which is what
 # keeps a save and a tape describing the same simulation they always did.
 var av_on := false                    # only a real windowed session; the probes
@@ -669,6 +683,13 @@ func _ready() -> void:
 	if save_enabled and DisplayServer.get_name() != "headless":
 		Input.set_mouse_mode(Input.MOUSE_MODE_CONFINED_HIDDEN)
 		mouse_owned = true
+	# THE ART, behind the same headless test and not behind save_enabled: a
+	# replay is watched on a screen and should look like the game. A headless
+	# session - every gate that puts this node in the tree, mark_rt R1,
+	# cam_gate C2 - has no screen and gets no art node, and a probe built with
+	# new() never reaches this line at all (tests/art_gate.gd A1).
+	if DisplayServer.get_name() != "headless":
+		_art_build()
 
 	sfx_crack = _player(_make_noise_wav(0.09, 0.018, 26111), -4.0, 2)
 	sfx_tick = _player(_make_sine_wav(0.05, 880.0), -8.0, 3)
@@ -1441,7 +1462,10 @@ func _bd(poly: PackedVector2Array, col: Color) -> void:
 #                           ribs. Same script and fillet rule as Ground
 #     Anchors (Node2D)      one Marker2D child per anchor, in the order they
 #       <Marker2D> ...      are indexed: levels/whip_anchor.gd gives radius
-#                           (m, default 0.12), jam (bool) and caption
+#                           (m, default 0.12), jam (bool) and caption.
+#         <anything> ...    ART ON THE ANCHOR: a Marker2D's children render
+#                           live at the beam (a Sprite2D of it, say) and are
+#                           read by nothing - see _art_build
 #     Spawn (Marker2D)      where the body starts. Required
 #     Goal (Marker2D)       the flag. Absent = a bench with no finish (the
 #                           lab's goal_x = 999)
@@ -1451,6 +1475,19 @@ func _bd(poly: PackedVector2Array, col: Color) -> void:
 #     Backdrop (Node2D)     optional paint: Polygon2D children, filled with
 #       <Polygon2D> ...     their own color, drawn in order under the terrain
 #                           and read by nothing else (see bd_poly)
+#     Art (Node2D)          optional, and THE ONLY NODE THAT RENDERS AS
+#       <anything> ...      AUTHORED: everything under it is drawn live by
+#                           Godot, whatever it is - Sprite2D, a Polygon2D or
+#                           Line2D with a texture, AnimatedSprite2D, a
+#                           ParallaxBackground and its layers, CPUParticles2D,
+#                           a shader material. The loader reads NOTHING from
+#                           it, not a coordinate, not a colour, so it cannot
+#                           reach the fingerprint, the hash or any gate. The
+#                           rule in one line: the Line2D is the collision,
+#                           Art is free. A level whose Art carries the rock
+#                           sets greybox = false on the root (whip_level.gd)
+#                           and _draw stops painting the grey world over it.
+#                           _art_build below is the mechanism.
 #
 # PIXELS, NOT METRES, AT PPM = 60 PX/M. The editor's grid, its zoom range,
 # Line2D.width and every gizmo assume pixel-sized scenes; a 60 m level authored
@@ -1795,6 +1832,20 @@ func _lv_overrides(node: Node, root: Node, p: PackedVector2Array) -> Dictionary:
 	for c in node.get_children():
 		if not (c is Node2D) or c is Line2D:
 			continue
+		# ONLY A FILLET MARKER MAY SIT UNDER A TERRAIN NODE, and the test is
+		# the property that makes it one. Before this line any Node2D here was
+		# read as a corner radius: a sprite an artist parented to Ground by
+		# habit was refused with a message about vertices if it sat off one,
+		# and if it happened to sit ON one it was silently taken as a fillet
+		# of radius 0.0 - the corner went sharp and the level's fingerprint
+		# moved (measured: steps 3144857459313072037 became 2561825494929403910
+		# from one decorative sprite). A picture changing the collision is the
+		# exact leak the art layer exists to make impossible, so it is refused
+		# by name and told where art goes.
+		if c.get("radius") == null:
+			_level_refuse("%s/%s is not a fillet marker. A terrain node's children are read as corner radii and nothing else; art belongs under Art, or under an anchor's Marker2D"
+				% [node.name, c.name])
+			return out
 		var q := _lv_point(c as Node2D, root)
 		var best := -1
 		var bd := 1e9
@@ -1810,6 +1861,125 @@ func _lv_overrides(node: Node, root: Node, p: PackedVector2Array) -> Dictionary:
 			return out
 		out[best] = float(_lv_get(c, "radius", 0.0))
 	return out
+
+# ---------------------------------------------------------------- the art --
+# ART SHOWS UP THE WAY SOUND DOES: only in a real windowed session, feeding
+# nothing back, invisible to every probe. _build_scene reads the scene into
+# arrays and FREES the instance, so a Sprite2D, a textured Polygon2D, a
+# ParallaxBackground - anything an artist would actually make - never got a
+# draw call. This instantiates the scene a SECOND time, from _ready, and puts
+# that instance in the tree as a child that draws BEHIND this node's own
+# _draw: show_behind_parent, which is the same canvas and the same z-index
+# with the child's commands issued first, so it composes with the Camera2D
+# (a world-space child scrolls with the world) and with the HUD CanvasLayer
+# (layer 1, above everything in layer 0) without a transform anywhere. The
+# scene is authored in pixels at PPM = 60, which is _draw's own scale, so an
+# instance at the origin lands on the sim exactly. Measured: a Polygon2D face
+# under the floor, a Line2D texture along it, a sprite on a beam, and the
+# rope, the body and the green ring are all drawn over them (art_gate A5).
+#
+# A SECOND INSTANCE, not the first kept alive, for two reasons. The first is
+# read inside setup_sim, which every headless probe runs and which runs
+# before _ready; keeping it would hand every probe a node graph it has no use
+# for. And the read path stays untouched to the byte - _build_scene and
+# _level_read are the lines they were - which tests/level_fidelity.gd F1 and
+# art_gate A3 then prove rather than argue. The cost is one more instantiate
+# at boot, and only there: 6.0 ms on steps_art (18 nodes kept), 0.002 ms on a
+# built-in level, and +0.02 ms CPU / +0.17 ms GPU per windowed frame after
+# that with the whole placeholder pack on screen (art_gate A7).
+#
+# WHAT THE LIVE INSTANCE KEEPS. Everything the sim already represents is
+# removed from it - Ground, Islands, Spawn, Goal, Camera, Backdrop, and any
+# other node at the root the schema does not name - so nothing is drawn
+# twice and the @tool helper drawings (the anchor's disc, the terrain's
+# air-side pips) do not appear in the game. Two things stay: Art, whole; and
+# Anchors, with each Marker2D's OWN drawing hidden through self_modulate,
+# which stops at the node and does not reach its children - so a sprite
+# parented to an anchor draws at the beam while the marker's disc does not.
+# The ring is _draw's, drawn over both.
+#
+# greybox is read HERE, off the live instance, not in _level_read: it is a
+# rendering choice, so it belongs to the rendering set-up, and a probe - no
+# _ready, no instance - keeps the default and paints the frame it always did.
+func _art_build() -> void:
+	if level_is_builtin(level_id):
+		return                          # the traverse, the lab, the crag: no scene
+	var path := level_scene_path(level_id)
+	if not ResourceLoader.exists(path, "PackedScene"):
+		return
+	var ps: PackedScene = ResourceLoader.load(path, "PackedScene")
+	if ps == null:
+		return
+	var root: Node = ps.instantiate()
+	greybox = bool(_lv_get(root, "greybox", true))
+	# A LEVEL WITH NOTHING TO SEE IS A MISTAKE, NOT AN INTENT. greybox off
+	# with no Art node draws the rope, the body and the rings over the clear
+	# colour - the floor is wherever the rope happens to lie. Measured
+	# unplayable; so the grey world stays on, and the console says why.
+	if not greybox and root.get_node_or_null("Art") == null:
+		print("art: greybox is off but %s has no Art node - nothing would be drawn but the instruments, so the greybox stays on" % path.get_file())
+		greybox = true
+	var drop: Array = []
+	for c in root.get_children():
+		if c.name == "Art":
+			continue
+		if not (c.name in ["Ground", "Islands", "Anchors", "Spawn", "Goal", "Camera", "Backdrop"]):
+			# Not a schema name: the loader never read it, so it was never
+			# collision, and it is not under Art, so it is not a picture. Say
+			# so rather than free it in silence - a node called Props with a
+			# level's worth of sprites in it vanished without a word once.
+			print("art: %s/%s is not a schema node and not under Art - it is not drawn. Move it under Art" % [path.get_file(), c.name])
+		if c.name == "Anchors":
+			for a in c.get_children():
+				if a is CanvasItem:
+					(a as CanvasItem).self_modulate = Color(1, 1, 1, 0)
+			continue
+		drop.append(c)
+	for c: Node in drop:
+		root.remove_child(c)
+		c.free()
+	# THE INSTRUMENTS STAY ON TOP, as a rule and not as advice. The whole
+	# layer draws behind this node's _draw, which is where the rope, the body,
+	# the rings and the crosshair live - unless something under Art carries a
+	# positive z_index, which lifts it above the default canvas and over all
+	# of them (measured: a z_index 5 sprite painted 77 of 85 rope pixels
+	# blue, silently). A CanvasLayer at layer 0 or above does the same to the
+	# HUD. Both are clamped here, by name, on the console.
+	var artn := root.get_node_or_null("Art")
+	if artn != null:
+		_art_clamp(artn)
+	if root is CanvasItem:
+		(root as CanvasItem).self_modulate = Color(1, 1, 1, 0)
+		(root as CanvasItem).show_behind_parent = true
+	root.name = "ArtLayer"
+	add_child(root)
+	art_root = root
+	art_on = true
+
+func art_node_count() -> int:
+	# how many nodes the live instance holds, for the gate; 0 without one
+	return 0 if art_root == null else _art_count(art_root)
+
+static func _art_count(n: Node) -> int:
+	var c := 1
+	for k in n.get_children():
+		c += _art_count(k)
+	return c
+
+static func _art_clamp(n: Node) -> void:
+	# see _art_build: nothing under Art may draw over the instruments
+	if n is CanvasItem:
+		var ci := n as CanvasItem
+		if ci.z_index > 0:
+			print("art: %s had z_index %d - clamped to 0. Nothing under Art may draw over the rope, the body or the rings" % [n.name, ci.z_index])
+			ci.z_index = 0
+	elif n is CanvasLayer:
+		var cl := n as CanvasLayer
+		if cl.layer >= 0:
+			print("art: %s is a CanvasLayer at layer %d - set to -1. A layer at 0 or above would draw over the HUD" % [n.name, cl.layer])
+			cl.layer = -1
+	for k in n.get_children():
+		_art_clamp(k)
 # ------------------------------------------------------ end scene levels --
 
 func _reset() -> void:
@@ -3297,37 +3467,61 @@ func _events() -> void:
 
 # -------------------------------------------------------------------- draw --
 func _draw() -> void:
-	# the backdrop first, so everything that matters is drawn over it
-	for j in bd_poly.size():
-		var poly: PackedVector2Array = bd_poly[j]
-		var px := PackedVector2Array()
-		px.resize(poly.size())
-		for q in poly.size():
-			px[q] = poly[q] * PPM
-		draw_colored_polygon(px, bd_col[j])
-	# terrain. THE BAND IS PAINTED INTO THE ROCK, so the line the rope rests on
-	# is the band's TOP EDGE and not its middle. Centred, half of a 6 px band
-	# (0.05 m) sat above the collision line - and a rope at rest sits at
-	# y = -p_rad, which tapers 0.05 m at the handle to 0.02 m at the tip while
-	# its own drawn width tapers 6 px to 2. So a resting rope was painted 50%
-	# inside the floor at the handle, 70% by mid-chain, and 100% from about
-	# segment 16 to the tip: the thin end of the whip was invisible against the
-	# rock it was lying on. The player reported it exactly - a tail skidding at
-	# 25 m/s read as "momentum running up it parallel THROUGH the floor" - and
-	# it was true of the paint and not of the sim, which never once put a
-	# particle below a surface (measured over the whole corpus: 0 of 2720
-	# substeps per run). Half the stroke along -n; a fillet is convex rock, so
-	# its band moves inward by shrinking the same amount.
-	var half := 3.0 / PPM
-	for s in t_a.size():
-		var o := -t_n[s] * half
-		draw_line((t_a[s] + o) * PPM, (t_b[s] + o) * PPM,
-			Color(0.32, 0.35, 0.42), 6.0)
-	# and the fillets, as terrain: the same colour and weight, only the
-	# exposed arc, so a rounded lip reads as one continuous edge of rock
-	for j in t_arc_c.size():
-		draw_arc(t_arc_c[j] * PPM, (t_arc_r[j] - half) * PPM, t_arc_ang[j].x,
-			t_arc_ang[j].y, 12, Color(0.32, 0.35, 0.42), 6.0)
+	# ================================================== THE WORLD (greybox) ==
+	# What the level IS: the backdrop, the terrain band, the fillets, and -
+	# inside the anchor loop below, for draw order - each anchor's disc. All
+	# of it painted only while greybox is true. A scene whose Art node carries
+	# the rock (greybox = false on its root, whip_level.gd) carries this
+	# itself, live, behind this node (_art_build), and grey lines painted over
+	# an artist's cliff are noise. The disc is the one WORLD item that lives
+	# in the INSTRUMENTATION loop rather than here: a pulse ring of anchor k
+	# is drawn before the disc of anchor k + 1, and that order is in every
+	# frame ever photographed, so it is kept to the byte rather than tidied
+	# (art_gate A4: the md5 of the steps frame, before this split and after).
+	if greybox:
+		# the backdrop first, so everything that matters is drawn over it
+		for j in bd_poly.size():
+			var poly: PackedVector2Array = bd_poly[j]
+			var px := PackedVector2Array()
+			px.resize(poly.size())
+			for q in poly.size():
+				px[q] = poly[q] * PPM
+			draw_colored_polygon(px, bd_col[j])
+		# terrain. THE BAND IS PAINTED INTO THE ROCK, so the line the rope rests
+		# on is the band's TOP EDGE and not its middle. Centred, half of a 6 px
+		# band (0.05 m) sat above the collision line - and a rope at rest sits
+		# at y = -p_rad, which tapers 0.05 m at the handle to 0.02 m at the tip
+		# while its own drawn width tapers 6 px to 2. So a resting rope was
+		# painted 50% inside the floor at the handle, 70% by mid-chain, and 100%
+		# from about segment 16 to the tip: the thin end of the whip was
+		# invisible against the rock it was lying on. The player reported it
+		# exactly - a tail skidding at 25 m/s read as "momentum running up it
+		# parallel THROUGH the floor" - and it was true of the paint and not of
+		# the sim, which never once put a particle below a surface (measured
+		# over the whole corpus: 0 of 2720 substeps per run). Half the stroke
+		# along -n; a fillet is convex rock, so its band moves inward by
+		# shrinking the same amount.
+		var half := 3.0 / PPM
+		for s in t_a.size():
+			var o := -t_n[s] * half
+			draw_line((t_a[s] + o) * PPM, (t_b[s] + o) * PPM,
+				Color(0.32, 0.35, 0.42), 6.0)
+		# and the fillets, as terrain: the same colour and weight, only the
+		# exposed arc, so a rounded lip reads as one continuous edge of rock
+		for j in t_arc_c.size():
+			draw_arc(t_arc_c[j] * PPM, (t_arc_r[j] - half) * PPM, t_arc_ang[j].x,
+				t_arc_ang[j].y, 12, Color(0.32, 0.35, 0.42), 6.0)
+
+	# ============================================ THE INSTRUMENTATION (always) ==
+	# What the game is DOING, drawn whatever the level looks like: the flag,
+	# the jam collar and the caption (what an anchor IS - authored, and the
+	# author clears the caption if the art says it), the wrap ring and its
+	# pulses, the rope and the load along it, the ground contacts, the tip,
+	# the crack, the body, the hand, the crosshair. An anchor's ring draws at
+	# the anchor whether or not its grey disc does: the ring is the game's
+	# honest instrument, this project has fixed it for lying twice, and art
+	# does not get to hide it. Measured: on steps_art the green ring is drawn
+	# over the beam sprite's plate (art_gate A5 samples the ring pixel).
 	# goal flag. Skipped where there is no goal: the lab parks goal_x past its
 	# own right wall, and a flag no one can reach is a promise the level is not
 	# making.
@@ -3344,8 +3538,11 @@ func _draw() -> void:
 	for k in a_pos.size():
 		var c := a_pos[k] * PPM
 		var r := a_r[k] * PPM
-		draw_circle(c, r, Color(0.55, 0.48, 0.38))
-		draw_circle(c, r * 0.55, Color(0.4, 0.35, 0.28))
+		if greybox:
+			# THE DISC is world, not instrument (the WORLD block says why it is
+			# drawn from here); with art on the beam it is the artist's
+			draw_circle(c, r, Color(0.55, 0.48, 0.38))
+			draw_circle(c, r * 0.55, Color(0.4, 0.35, 0.28))
 		# A JAM ANCHOR IS A DIFFERENT MARK AT THE SAME ANCHOR, never a different
 		# truth value: the ring above still goes green on _holds() and nothing
 		# else, because the moment a jam's arc means something a wrap's arc does
@@ -4147,6 +4344,10 @@ const SNAP_SKIP := ["external_drive", "save_enabled", "save_path", "save_due",
 	"cam_vols",
 	# SCENE-LEVEL FURNITURE: why a scene was refused, and its caption block.
 	"level_err", "level_hud",
+	# THE ART LAYER: a picture, and whether _draw paints the grey world under
+	# it. Neither is read by a tick (art_gate A2 runs the hash with the layer
+	# forced on), and the instance itself is an Object, which snap_keys skips.
+	"art_on", "greybox",
 	# and the per-tick candidate lists, rebuilt at the top of every tick from
 	# the particles' positions - derived, never carried
 	"cand_seg", "cand_arc",

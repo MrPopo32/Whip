@@ -142,7 +142,7 @@ func _run() -> void:
 		failures.append("G3 amplification %.1fx (tip %.1f / handle %.1f m/s) < 3x"
 			% [max_tip / max_handle, max_tip, max_handle])
 	else:
-		print("  G3 ok: tip %.1f m/s, handle %.1f m/s, %.1fx"
+		print("  G3 ok: tip %.4f m/s, handle %.4f m/s, %.4fx"
 			% [max_tip, max_handle, max_tip / max_handle])
 	simw.free()
 

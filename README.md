@@ -211,7 +211,12 @@ answer.
 recorder `tape_rec.gd` uses, pointed at your hands. Two things about it. Record
 into `takes/`, not `tapes/`: `tape_verify` replays everything in `tapes/` and
 requires each file to contain what it declares, so a bug recording there is a
-gate that fails on purpose. `takes/` is gitignored — a recorded human session is
+gate that fails on purpose. Note that `takes/bug1.tape` was recorded before
+the payout ratchet was fixed (2c3ba7e): its stored census says 198 cracks and
+30 catches, and on HEAD it replays to 68 and 19, diverging after about tick
+1830. The first 1830 ticks are exact; per-catch statistics are taken by
+restoring each catch and continuing it. Do not re-record it - it is the only
+human play there is. `takes/` is gitignored — a recorded human session is
 evidence, not source, and it is kept beside the code rather than in it. And
 while recording, **F** and **G** stamp the tick you were looking at: F for "the
 ring was green and it let go anyway", G for "that should have hooked and did
@@ -1430,6 +1435,36 @@ the developer's call, and the measurements are beside them:
   obeys every other rule, grip included. An assist you can see and walk away
   from is a different animal to one that rides along with you.
 - Rope never pushes. Arm forces are internal pairs (no waggle-flight).
+- **The catch arrests you at the chord, and the rope you see below it is the
+  slack you threw.** When the hand shuts, the tether is set to the straight-
+  line distance from fist to beam at that instant and the body stops falling
+  there. The rope between them keeps whatever arc it had - on the recorded
+  session a median 3.97 m of rope over a 3.14 m chord, sagging 0.57 m. It is
+  not carrying you; the load runs straight. A tight throw has no belly, so the
+  belly is a readout of the throw, not a fault in the hang. The alternative -
+  set the tether to the rope's true length and let the body fall the slack -
+  was measured twice and rejected: on a 41-start pump ensemble it lost 57 of
+  164 wraps against 41, 41 of 41 with a real belly laid in the span, a thrown
+  jam fell 2.6 m with the fist shut, and two of the player's own locked wraps
+  came undone under a shut hand. Letting the tether out gradually is worse: a
+  tether that grows every time it is taut extends the pendulum at the bottom
+  of every swing, which is an anti-pump.
+- **ALIGN: a shut fist lies along the pull.** While the hand is shut on a
+  loaded wrap, three quarters of the cursor's motion ACROSS the line from beam
+  to body is refused; motion ALONG it - the pump - is untouched, and a parked
+  cursor is bit-identical to the arm without it. 0.75 is a plateau, not a
+  spike: on a 41-start ensemble the R 2.71 rig loses 0 of 41 wraps at every
+  weight from 0.75 to 0.90, a second start window agrees, and 0.50 is worse
+  than none (15 of 41 lost) - so it is not lowered to give anything back. What
+  it refuses is the sideways crank: circling the cursor while loaded. The
+  player did this on 69% of his hanging ticks, and it worked - which is the
+  point: open-loop circling at a fixed rate, no feedback and no timing, goes
+  over the top in 0.4-1.0 cursor cycles and reaches 37 m/s. Under 0.75 it
+  needs 3.5 cycles in one cell of forty. A stroke that beats the pendulum
+  blind is an exploit, not a skill. Cost on the recorded session, each catch
+  continued under his own hand: 19 of 19 catches, 15 of 15 locks, every hold
+  to its own release - and a smaller swing on 11 of 19 hangs, mean peak
+  96 -> 84 degrees. That is the crank, gone, and it is deliberate.
 - Dissipation only via contact friction and taut-catch yanks.
 - Wrap angle is measured from live geometry every tick, never event-counted.
 - **The camera never reads the whip.** Its whole input is the body's position,

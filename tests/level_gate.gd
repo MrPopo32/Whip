@@ -116,14 +116,27 @@ func _initialize() -> void:
 	LIB.contract_report(m, names)
 	m.free()
 	# ---- W R
-	var w := LIB.new_sim(level)
-	LIB.walk_check(w, "W", fail)
-	w.free()
-	if not quick:
-		LIB.reach_check(level, names, "R", fail)
+	# A CLIMB is not walked: its route is launches, and the file
+	# tests/gen_climb.py writes beside the scene says so. tests/climb_gate.gd
+	# measures every door of it; the gait check and the descent's reach
+	# check would only report that a climb cannot be crawled.
+	var plan_path := "res://levels/%s.plan.json" % name
+	var wr := " W R"
+	if FileAccess.file_exists(plan_path):
+		var pj: Variant = JSON.parse_string(FileAccess.get_file_as_string(plan_path))
+		var g_name := "flight_gate" if (pj is Dictionary and bool(pj.get("flight", false))) else "climb_gate"
+		print("  W R: %s is a route of launches (%s); tests/%s.gd certifies it, not the gait" % [name, plan_path, g_name])
+		wr = " (W R: launches, see %s)" % g_name
+	else:
+		var w := LIB.new_sim(level)
+		LIB.walk_check(w, "W", fail)
+		w.free()
+		if not quick:
+			LIB.reach_check(level, names, "R", fail)
+		elif quick:
+			wr = " W (R skipped: quick)"
 	if fail.is_empty():
-		print("PASS  level gate %s: F T N A D S W%s" % [level if level != "" else "traverse",
-			" (R skipped: quick)" if quick else " R"])
+		print("PASS  level gate %s: F T N A D S%s" % [level if level != "" else "traverse", wr])
 		quit(0)
 		return
 	for f in fail:

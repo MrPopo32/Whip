@@ -1,0 +1,196 @@
+{
+ "stages": [
+  {
+   "i": 0,
+   "section": "glide",
+   "kind": "glide",
+   "policy": "park",
+   "drop": 1.5,
+   "lip_x": 0.0,
+   "shelf_y": 0.0,
+   "beam": [
+    2.5,
+    -0.5
+   ],
+   "target": {
+    "x0": 4.6,
+    "x1": 12.6,
+    "y": 1.5
+   }
+  },
+  {
+   "i": 1,
+   "section": "glide",
+   "kind": "glide",
+   "policy": "park",
+   "drop": 1.5,
+   "lip_x": 12.6,
+   "shelf_y": 1.5,
+   "beam": [
+    15.1,
+    1.0
+   ],
+   "target": {
+    "x0": 17.2,
+    "x1": 25.2,
+    "y": 3.0
+   }
+  },
+  {
+   "i": 2,
+   "section": "hold",
+   "kind": "hold",
+   "policy": "tug",
+   "drop": 0.0,
+   "lip_x": 25.2,
+   "shelf_y": 3.0,
+   "beam": [
+    27.7,
+    2.5
+   ],
+   "target": {
+    "x0": 30.6,
+    "x1": 38.6,
+    "y": 3.0
+   }
+  },
+  {
+   "i": 3,
+   "section": "hold",
+   "kind": "hold",
+   "policy": "tug",
+   "drop": 0.0,
+   "lip_x": 38.6,
+   "shelf_y": 3.0,
+   "beam": [
+    41.1,
+    2.5
+   ],
+   "target": {
+    "x0": 44.0,
+    "x1": 52.0,
+    "y": 3.0
+   }
+  },
+  {
+   "i": 4,
+   "section": "rise",
+   "kind": "rise",
+   "policy": "tug",
+   "drop": -1.0,
+   "lip_x": 52.0,
+   "shelf_y": 3.0,
+   "beam": [
+    54.5,
+    1.75
+   ],
+   "target": {
+    "x0": 57.3,
+    "x1": 65.3,
+    "y": 2.0
+   }
+  },
+  {
+   "i": 5,
+   "section": "rise",
+   "kind": "rise",
+   "policy": "tug",
+   "drop": -1.0,
+   "lip_x": 65.3,
+   "shelf_y": 2.0,
+   "beam": [
+    67.8,
+    0.75
+   ],
+   "target": {
+    "x0": 70.6,
+    "x1": 78.6,
+    "y": 1.0
+   }
+  },
+  {
+   "i": 6,
+   "section": "rise",
+   "kind": "rise",
+   "policy": "tug",
+   "drop": -1.0,
+   "lip_x": 78.6,
+   "shelf_y": 1.0,
+   "beam": [
+    81.1,
+    -0.25
+   ],
+   "target": {
+    "x0": 83.9,
+    "x1": 91.9,
+    "y": 0.0
+   }
+  },
+  {
+   "i": 7,
+   "section": "rise",
+   "kind": "rise",
+   "policy": "tug",
+   "drop": -1.0,
+   "lip_x": 91.9,
+   "shelf_y": 0.0,
+   "beam": [
+    94.4,
+    -1.25
+   ],
+   "target": {
+    "x0": 97.2,
+    "x1": 105.2,
+    "y": -1.0
+   }
+  },
+  {
+   "i": 8,
+   "section": "rise",
+   "kind": "rise",
+   "policy": "tug",
+   "drop": -1.0,
+   "lip_x": 105.2,
+   "shelf_y": -1.0,
+   "beam": [
+    107.7,
+    -2.25
+   ],
+   "target": {
+    "x0": 110.5,
+    "x1": 118.5,
+    "y": -2.0
+   }
+  }
+ ],
+ "spawn": [
+  -4.0,
+  -0.5
+ ],
+ "goal": [
+  114.5,
+  -2.0
+ ],
+ "bottom": [
+  0.0,
+  7.0
+ ],
+ "checkpoints": [
+  {
+   "name": "C00_glide",
+   "x": -4.0,
+   "y": -0.5
+  },
+  {
+   "name": "C02_hold",
+   "x": 18.7,
+   "y": 2.5
+  },
+  {
+   "name": "C04_rise",
+   "x": 45.5,
+   "y": 2.5
+  }
+ ],
+ "flight": true
+}

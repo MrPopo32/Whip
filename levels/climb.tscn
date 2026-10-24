@@ -1,0 +1,159 @@
+[gd_scene load_steps=4 format=3]
+
+[ext_resource type="Script" path="res://levels/whip_level.gd" id="1_lvl"]
+[ext_resource type="Script" path="res://levels/whip_terrain.gd" id="2_ter"]
+[ext_resource type="Script" path="res://levels/whip_anchor.gd" id="3_anc"]
+
+[node name="Level" type="Node2D"]
+script = ExtResource("1_lvl")
+hud = "THE WHIP - THE CLIMB   (--level climb)   18 doors, 40 m up, 4 sections. Every door: stand at the lip, catch the beam, pump, let go on the way up.
+PUMP: reach DOWN the rope as you pass under the beam (M on: pull UP toward it). STICK: press it into the rock to plant it.
+M = mouse flip, P = stick (normal / springy / hammer), C [ ] = crack, sensitivity, 1 2 3 L = control modes. F11 = fullscreen.
+Fall into a shaft and you are back at the start of the section. R = restart there."
+
+[node name="Ground" type="Line2D" parent="."]
+script = ExtResource("2_ter")
+points = PackedVector2Array(-960, -840, -960, 0, 0, 0, 0, 720, 210, 720, 210, -120, 690, -120, 690, 720, 900, 720, 900, -240, 1380, -240, 1380, 720, 1590, 720, 1590, -360, 2070, -360, 2070, 720, 2310, 720, 2310, -480, 2790, -480, 2790, 720, 3030, 720, 3030, -600, 3510, -600, 3510, 720, 3780, 720, 3780, -720, 4260, -720, 4260, 720, 4530, 720, 4530, -840, 5010, -840, 5010, 720, 5280, 720, 5280, -960, 5760, -960, 5760, 720, 6060, 720, 6060, -1080, 6540, -1080, 6540, 720, 6840, 720, 6840, -1200, 7320, -1200, 7320, 720, 7530, 720, 7530, -1350, 8010, -1350, 8010, 720, 8220, 720, 8220, -1500, 8700, -1500, 8700, 720, 8910, 720, 8910, -1650, 9390, -1650, 9390, 720, 9630, 720, 9630, -1800, 10110, -1800, 10110, 720, 10350, 720, 10350, -1950, 10830, -1950, 10830, 720, 11070, 720, 11070, -2100, 11550, -2100, 11550, 720, 11805, 720, 11805, -2250, 12285, -2250, 12285, 720, 12540, 720, 12540, -2400, 13020, -2400, 13020, -3240)
+width = 6.0
+default_color = Color(0.32, 0.35, 0.42, 1)
+
+[node name="Islands" type="Node2D" parent="."]
+
+[node name="Anchors" type="Node2D" parent="."]
+
+[node name="D00_ladder" type="Marker2D" parent="Anchors"]
+position = Vector2(84, -132)
+gizmo_extents = 6.6
+script = ExtResource("3_anc")
+radius = 0.11
+
+[node name="D01_ladder" type="Marker2D" parent="Anchors"]
+position = Vector2(774, -252)
+gizmo_extents = 6.6
+script = ExtResource("3_anc")
+radius = 0.11
+
+[node name="D02_ladder" type="Marker2D" parent="Anchors"]
+position = Vector2(1464, -372)
+gizmo_extents = 6.6
+script = ExtResource("3_anc")
+radius = 0.11
+
+[node name="D03_reach" type="Marker2D" parent="Anchors"]
+position = Vector2(2154, -492)
+gizmo_extents = 6.6
+script = ExtResource("3_anc")
+radius = 0.11
+
+[node name="D04_reach" type="Marker2D" parent="Anchors"]
+position = Vector2(2874, -612)
+gizmo_extents = 6.6
+script = ExtResource("3_anc")
+radius = 0.11
+
+[node name="D05_reach" type="Marker2D" parent="Anchors"]
+position = Vector2(3594, -732)
+gizmo_extents = 6.6
+script = ExtResource("3_anc")
+radius = 0.11
+
+[node name="D06_reach" type="Marker2D" parent="Anchors"]
+position = Vector2(4344, -852)
+gizmo_extents = 6.6
+script = ExtResource("3_anc")
+radius = 0.11
+
+[node name="D07_reach" type="Marker2D" parent="Anchors"]
+position = Vector2(5094, -972)
+gizmo_extents = 6.6
+script = ExtResource("3_anc")
+radius = 0.11
+
+[node name="D08_reach" type="Marker2D" parent="Anchors"]
+position = Vector2(5844, -1092)
+gizmo_extents = 6.6
+script = ExtResource("3_anc")
+radius = 0.11
+
+[node name="D09_reach" type="Marker2D" parent="Anchors"]
+position = Vector2(6624, -1212)
+gizmo_extents = 6.6
+script = ExtResource("3_anc")
+radius = 0.11
+
+[node name="D10_steps" type="Marker2D" parent="Anchors"]
+position = Vector2(7404, -1332)
+gizmo_extents = 6.6
+script = ExtResource("3_anc")
+radius = 0.11
+
+[node name="D11_steps" type="Marker2D" parent="Anchors"]
+position = Vector2(8094, -1482)
+gizmo_extents = 6.6
+script = ExtResource("3_anc")
+radius = 0.11
+
+[node name="D12_steps" type="Marker2D" parent="Anchors"]
+position = Vector2(8784, -1632)
+gizmo_extents = 6.6
+script = ExtResource("3_anc")
+radius = 0.11
+
+[node name="D13_steps" type="Marker2D" parent="Anchors"]
+position = Vector2(9474, -1782)
+gizmo_extents = 6.6
+script = ExtResource("3_anc")
+radius = 0.11
+
+[node name="D14_steps" type="Marker2D" parent="Anchors"]
+position = Vector2(10194, -1932)
+gizmo_extents = 6.6
+script = ExtResource("3_anc")
+radius = 0.11
+
+[node name="D15_edge" type="Marker2D" parent="Anchors"]
+position = Vector2(10914, -2082)
+gizmo_extents = 6.6
+script = ExtResource("3_anc")
+radius = 0.11
+
+[node name="D16_edge" type="Marker2D" parent="Anchors"]
+position = Vector2(11634, -2232)
+gizmo_extents = 6.6
+script = ExtResource("3_anc")
+radius = 0.11
+
+[node name="D17_edge" type="Marker2D" parent="Anchors"]
+position = Vector2(12369, -2382)
+gizmo_extents = 6.6
+script = ExtResource("3_anc")
+radius = 0.11
+
+[node name="Spawn" type="Marker2D" parent="."]
+position = Vector2(-240, -30)
+
+[node name="Goal" type="Marker2D" parent="."]
+position = Vector2(12780, -2400)
+
+[node name="Bottom" type="Marker2D" parent="."]
+position = Vector2(0, 360)
+
+[node name="Checkpoints" type="Node2D" parent="."]
+
+[node name="C00_ladder" type="Marker2D" parent="Checkpoints"]
+position = Vector2(-240, -30)
+
+[node name="C03_reach" type="Marker2D" parent="Checkpoints"]
+position = Vector2(1680, -390)
+
+[node name="C10_steps" type="Marker2D" parent="Checkpoints"]
+position = Vector2(6930, -1230)
+
+[node name="C15_edge" type="Marker2D" parent="Checkpoints"]
+position = Vector2(10440, -1980)
+
+[node name="Backdrop" type="Node2D" parent="."]
+
+[node name="far_cliff" type="Polygon2D" parent="Backdrop"]
+color = Color(0.125, 0.135, 0.17, 1)
+polygon = PackedVector2Array(-2760, 1800, -2760, -360, 14820, -4560, 14820, 1800)

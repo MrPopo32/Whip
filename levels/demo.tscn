@@ -1,0 +1,203 @@
+[gd_scene load_steps=10 format=3]
+
+[ext_resource type="Script" path="res://levels/whip_level.gd" id="1_lvl"]
+[ext_resource type="Script" path="res://levels/whip_terrain.gd" id="2_ter"]
+[ext_resource type="Script" path="res://levels/whip_anchor.gd" id="3_anc"]
+[ext_resource type="Texture2D" path="res://levels/art/demo/sky.png" id="4_sky"]
+[ext_resource type="Texture2D" path="res://levels/art/demo/far.png" id="5_far"]
+[ext_resource type="Texture2D" path="res://levels/art/demo/mid.png" id="6_mid"]
+[ext_resource type="Texture2D" path="res://levels/art/demo/rock.png" id="7_rock"]
+[ext_resource type="Texture2D" path="res://levels/art/demo/beam.png" id="8_beam"]
+[ext_resource type="Texture2D" path="res://levels/art/demo/flag.png" id="9_flag"]
+
+[node name="Level" type="Node2D"]
+script = ExtResource("1_lvl")
+hud = "THE WHIP   -   a whip is your only tool and your only way to move
+Throw it at the branch ahead and HOLD (Space or click). Step off the edge: the drop is your swing. Let go on the way up and fly.
+To land higher, pull the mouse DOWN the rope each time you pass under the branch. Fall and you are back at the last flag.
+F1 = more readouts   F11 = fullscreen   R = restart"
+greybox = false
+
+[node name="Ground" type="Line2D" parent="."]
+script = ExtResource("2_ter")
+points = PackedVector2Array(-960, -840, -960, 0, 0, 0, 0, 780, 276, 780, 276, 90, 756, 90, 756, 780, 1032, 780, 1032, 180, 1512, 180, 1512, 780, 1836, 780, 1836, 180, 2316, 180, 2316, 780, 2640, 780, 2640, 180, 3120, 180, 3120, 780, 3438, 780, 3438, 120, 3918, 120, 3918, 780, 4236, 780, 4236, 60, 4716, 60, 4716, 780, 5034, 780, 5034, 0, 5514, 0, 5514, 780, 5832, 780, 5832, -60, 6312, -60, 6312, 780, 6630, 780, 6630, -120, 7110, -120, 7110, -960)
+width = 6.0
+default_color = Color(0.32, 0.35, 0.42, 1)
+
+[node name="Islands" type="Node2D" parent="."]
+
+[node name="Anchors" type="Node2D" parent="."]
+
+[node name="B00_glide" type="Marker2D" parent="Anchors"]
+position = Vector2(150, -30)
+gizmo_extents = 6.6
+script = ExtResource("3_anc")
+radius = 0.11
+
+[node name="branch" type="Sprite2D" parent="Anchors/B00_glide"]
+texture = ExtResource("8_beam")
+
+[node name="B01_glide" type="Marker2D" parent="Anchors"]
+position = Vector2(906, 60)
+gizmo_extents = 6.6
+script = ExtResource("3_anc")
+radius = 0.11
+
+[node name="branch" type="Sprite2D" parent="Anchors/B01_glide"]
+texture = ExtResource("8_beam")
+
+[node name="B02_hold" type="Marker2D" parent="Anchors"]
+position = Vector2(1662, 150)
+gizmo_extents = 6.6
+script = ExtResource("3_anc")
+radius = 0.11
+
+[node name="branch" type="Sprite2D" parent="Anchors/B02_hold"]
+texture = ExtResource("8_beam")
+
+[node name="B03_hold" type="Marker2D" parent="Anchors"]
+position = Vector2(2466, 150)
+gizmo_extents = 6.6
+script = ExtResource("3_anc")
+radius = 0.11
+
+[node name="branch" type="Sprite2D" parent="Anchors/B03_hold"]
+texture = ExtResource("8_beam")
+
+[node name="B04_rise" type="Marker2D" parent="Anchors"]
+position = Vector2(3270, 105)
+gizmo_extents = 6.6
+script = ExtResource("3_anc")
+radius = 0.11
+
+[node name="branch" type="Sprite2D" parent="Anchors/B04_rise"]
+texture = ExtResource("8_beam")
+
+[node name="B05_rise" type="Marker2D" parent="Anchors"]
+position = Vector2(4068, 45)
+gizmo_extents = 6.6
+script = ExtResource("3_anc")
+radius = 0.11
+
+[node name="branch" type="Sprite2D" parent="Anchors/B05_rise"]
+texture = ExtResource("8_beam")
+
+[node name="B06_rise" type="Marker2D" parent="Anchors"]
+position = Vector2(4866, -15)
+gizmo_extents = 6.6
+script = ExtResource("3_anc")
+radius = 0.11
+
+[node name="branch" type="Sprite2D" parent="Anchors/B06_rise"]
+texture = ExtResource("8_beam")
+
+[node name="B07_rise" type="Marker2D" parent="Anchors"]
+position = Vector2(5664, -75)
+gizmo_extents = 6.6
+script = ExtResource("3_anc")
+radius = 0.11
+
+[node name="branch" type="Sprite2D" parent="Anchors/B07_rise"]
+texture = ExtResource("8_beam")
+
+[node name="B08_rise" type="Marker2D" parent="Anchors"]
+position = Vector2(6462, -135)
+gizmo_extents = 6.6
+script = ExtResource("3_anc")
+radius = 0.11
+
+[node name="branch" type="Sprite2D" parent="Anchors/B08_rise"]
+texture = ExtResource("8_beam")
+
+[node name="Spawn" type="Marker2D" parent="."]
+position = Vector2(-240, -30)
+
+[node name="Goal" type="Marker2D" parent="."]
+position = Vector2(6870, -120)
+
+[node name="Bottom" type="Marker2D" parent="."]
+position = Vector2(0, 420)
+
+[node name="Checkpoints" type="Node2D" parent="."]
+
+[node name="C00_glide" type="Marker2D" parent="Checkpoints"]
+position = Vector2(-240, -30)
+
+[node name="C02_hold" type="Marker2D" parent="Checkpoints"]
+position = Vector2(1122, 150)
+
+[node name="C04_rise" type="Marker2D" parent="Checkpoints"]
+position = Vector2(2730, 150)
+
+[node name="Art" type="Node2D" parent="."]
+
+[node name="Parallax" type="ParallaxBackground" parent="Art"]
+layer = -100
+
+[node name="Sky" type="ParallaxLayer" parent="Art/Parallax"]
+motion_scale = Vector2(0, 0)
+
+[node name="sky" type="Sprite2D" parent="Art/Parallax/Sky"]
+scale = Vector2(25, 1)
+texture = ExtResource("4_sky")
+centered = false
+
+[node name="Far" type="ParallaxLayer" parent="Art/Parallax"]
+motion_scale = Vector2(0.15, 0.08)
+motion_mirroring = Vector2(1600, 0)
+
+[node name="far" type="Sprite2D" parent="Art/Parallax/Far"]
+position = Vector2(0, 180)
+texture = ExtResource("5_far")
+centered = false
+
+[node name="Mid" type="ParallaxLayer" parent="Art/Parallax"]
+motion_scale = Vector2(0.35, 0.2)
+motion_mirroring = Vector2(1600, 0)
+
+[node name="mid" type="Sprite2D" parent="Art/Parallax/Mid"]
+position = Vector2(-200, 330)
+texture = ExtResource("6_mid")
+centered = false
+
+[node name="Rock" type="Polygon2D" parent="Art"]
+texture_repeat = 2
+texture = ExtResource("7_rock")
+polygon = PackedVector2Array(-960, -840, -960, 0, 0, 0, 0, 780, 276, 780, 276, 90, 756, 90, 756, 780, 1032, 780, 1032, 180, 1512, 180, 1512, 780, 1836, 780, 1836, 180, 2316, 180, 2316, 780, 2640, 780, 2640, 180, 3120, 180, 3120, 780, 3438, 780, 3438, 120, 3918, 120, 3918, 780, 4236, 780, 4236, 60, 4716, 60, 4716, 780, 5034, 780, 5034, 0, 5514, 0, 5514, 780, 5832, 780, 5832, -60, 6312, -60, 6312, 780, 6630, 780, 6630, -120, 7110, -120, 7110, -960, 7110, 3180, -960, 3180)
+
+[node name="EdgeShadow" type="Line2D" parent="Art"]
+points = PackedVector2Array(-960, -840, -960, 0, 0, 0, 0, 780, 276, 780, 276, 90, 756, 90, 756, 780, 1032, 780, 1032, 180, 1512, 180, 1512, 780, 1836, 780, 1836, 180, 2316, 180, 2316, 780, 2640, 780, 2640, 180, 3120, 180, 3120, 780, 3438, 780, 3438, 120, 3918, 120, 3918, 780, 4236, 780, 4236, 60, 4716, 60, 4716, 780, 5034, 780, 5034, 0, 5514, 0, 5514, 780, 5832, 780, 5832, -60, 6312, -60, 6312, 780, 6630, 780, 6630, -120, 7110, -120, 7110, -960)
+width = 14.0
+default_color = Color(0.3, 0.22, 0.26, 1)
+joint_mode = 2
+
+[node name="Edge" type="Line2D" parent="Art"]
+points = PackedVector2Array(-960, -840, -960, 0, 0, 0, 0, 780, 276, 780, 276, 90, 756, 90, 756, 780, 1032, 780, 1032, 180, 1512, 180, 1512, 780, 1836, 780, 1836, 180, 2316, 180, 2316, 780, 2640, 780, 2640, 180, 3120, 180, 3120, 780, 3438, 780, 3438, 120, 3918, 120, 3918, 780, 4236, 780, 4236, 60, 4716, 60, 4716, 780, 5034, 780, 5034, 0, 5514, 0, 5514, 780, 5832, 780, 5832, -60, 6312, -60, 6312, 780, 6630, 780, 6630, -120, 7110, -120, 7110, -960)
+width = 5.0
+default_color = Color(0.86, 0.72, 0.56, 1)
+joint_mode = 2
+
+[node name="Flag" type="Sprite2D" parent="Art"]
+position = Vector2(6960, -189)
+offset = Vector2(14.5, 0)
+scale = Vector2(2.4, 2.4)
+texture = ExtResource("9_flag")
+
+[node name="flag_C00_glide" type="Sprite2D" parent="Art"]
+position = Vector2(-240, -45)
+offset = Vector2(14.5, 0)
+scale = Vector2(1.6, 1.6)
+texture = ExtResource("9_flag")
+
+[node name="flag_C02_hold" type="Sprite2D" parent="Art"]
+position = Vector2(1122, 135)
+offset = Vector2(14.5, 0)
+scale = Vector2(1.6, 1.6)
+texture = ExtResource("9_flag")
+
+[node name="flag_C04_rise" type="Sprite2D" parent="Art"]
+position = Vector2(2730, 135)
+offset = Vector2(14.5, 0)
+scale = Vector2(1.6, 1.6)
+texture = ExtResource("9_flag")
+

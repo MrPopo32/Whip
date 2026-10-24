@@ -62,10 +62,11 @@ const ALIGN_LOAD_EPS := 0.01      # m: on the ground the tether must be this
                                   # close to taut before the load is real
 const ALIGN_DEAD := 0.001         # m: an across-the-load command smaller than
                                   # this is not a command. The control surface
-                                  # is REACH across 138 physical pixels, so one
-                                  # screen pixel of hand is 8.3 mm: this dead
-                                  # zone is an eighth of the smallest movement
-                                  # the mouse can express.
+                                  # is REACH across 69 physical pixels of mouse
+                                  # travel (PPM_INPUT 60 px/m), so one pixel of
+                                  # hand is 16.7 mm: this dead zone is a
+                                  # sixteenth of the smallest movement the mouse
+                                  # can express.
 
 const BODY_M := 8.0               # body : whip mass ~ 8:1 (panel ruling)
 const BODY_R := 0.28
@@ -386,6 +387,19 @@ var run_ticks := 0
 var finished := false
 var falls := 0
 var spawn := Vector2(-4.6, -1.0)
+var spawn0 := Vector2(-4.6, -1.0)   # THE AUTHORED SPAWN, set once by setup_sim.
+                                      # spawn moves to each checkpoint reached and
+                                      # is state; spawn0 is the level's, and is
+                                      # what level_fingerprint hashes - a tape
+                                      # saved after a checkpoint used to carry the
+                                      # moved spawn's fingerprint and be refused
+                                      # by the level it was recorded on. In
+                                      # SNAP_SKIP (level furniture).
+var cp_pos := PackedVector2Array()  # CHECKPOINTS (scene levels): stand within
+                                      # CP_R of one and spawn moves there. Level
+                                      # furniture, not state: in SNAP_SKIP; the
+                                      # spawn it moves IS state, and saved
+const CP_R := 1.0                     # m
 var goal_x := 58.0
 var goal_y := 12.0                    # the floor the flag stands on. Split out
                                       # of _draw's literal 12.0 when the lab
@@ -605,8 +619,11 @@ func _ready() -> void:
 	if pos.size() == 0:
 		# WHICH LEVEL, read before the level is built rather than in
 		# _boot_session, which runs after it. A harness that builds the sim
-		# itself sets level_id directly and never reaches this line.
-		level_id = _cmdline_level()
+		# itself sets level_id directly and never reaches this line. A level
+		# scene run on its own (F6, whip_level.gd) sets level_id before it
+		# adds this node, and that wins over a command line that has none.
+		if level_id == "":
+			level_id = _cmdline_level()
 		setup_sim()
 	if level_err != "":
 		# A scene the loader refused is not played and, above all, not saved:
@@ -740,6 +757,7 @@ func clear_anchors() -> void:
 
 func setup_sim() -> void:
 	_build_level()
+	spawn0 = spawn
 	# THE LEVEL OWNS ITS SLOT. One slot per level, still one slot per level -
 	# the "no second save" contract is about there being no earlier state of
 	# THIS run to go back to, and a lab run is not an earlier state of the
@@ -766,6 +784,7 @@ func setup_sim() -> void:
 	_av_size()
 
 func _build_level() -> void:
+	cp_pos = PackedVector2Array()
 	# TWO LEVELS, ONE OF WHICH MAY NOT MOVE. The shipped traverse is hashed by
 	# level_fingerprint() into every tape and into the player's save, so this
 	# branch exists precisely so that adding a second level cannot touch the
@@ -1469,6 +1488,14 @@ func _bd(poly: PackedVector2Array, col: Color) -> void:
 #     Spawn (Marker2D)      where the body starts. Required
 #     Goal (Marker2D)       the flag. Absent = a bench with no finish (the
 #                           lab's goal_x = 999)
+#     Bottom (Marker2D)     optional: the out-of-world line. Fall past its y
+#                           and you are teleported to Spawn (falls + 1).
+#                           Absent = 4 m under the deepest rock, which no
+#                           body can reach; present, it lets a pit with a
+#                           floor be a fall to the start. In the fingerprint
+#     Checkpoints (Node2D)  optional: Marker2D children. Stand within 1.0 m of
+#       <Marker2D> ...      one and Spawn moves there (the spawn is state, so
+#                           the save carries it). In the fingerprint when any
 #     Camera (Node2D)       optional. Absent = derived from the floors (below)
 #       <Line2D> ...        one volume each: exactly 2 points on the tier's
 #                           floor, x0 to x1; levels/whip_camvol.gd gives zoom
@@ -1584,6 +1611,7 @@ func _level_refuse(what: String) -> void:
 		print(level_err)
 
 func _build_scene(path: String) -> void:
+	var bottom := NAN
 	if not ResourceLoader.exists(path, "PackedScene"):
 		_level_refuse("%s does not exist (a scene level lives in res://levels/)" % path)
 	else:
@@ -1597,6 +1625,13 @@ func _build_scene(path: String) -> void:
 			# headless probe and the windowed game read the same numbers.
 			var root: Node = ps.instantiate()
 			_level_read(root, path.get_file())
+			# THE BOTTOM MARKER, read here and applied after _finish_terrain
+			# below, which derives world_bottom from the deepest rock. A
+			# level whose first pit leads nowhere puts Bottom above that
+			# pit's floor: fall past it and you are back at Spawn.
+			var bt := root.get_node_or_null("Bottom")
+			if bt != null and bt is Node2D:
+				bottom = _lv_point(bt as Node2D, root).y
 			root.free()
 	if level_err != "":
 		# A refused level is not played and not saved: _ready quits on
@@ -1609,6 +1644,8 @@ func _build_scene(path: String) -> void:
 		goal_x = 999.0
 		goal_y = 0.0
 	_finish_terrain()
+	if level_err == "" and not is_nan(bottom):
+		world_bottom = _lv_q(bottom, LEVEL_GRID)
 
 func _level_read(root: Node, fname: String) -> void:
 	var fg := float(_lv_get(root, "fillet_ground", LEVEL_FILLET_GROUND))
@@ -1703,6 +1740,12 @@ func _level_read(root: Node, fname: String) -> void:
 	else:
 		goal_x = 999.0
 		goal_y = 0.0
+	# ---- checkpoints: optional, Marker2D children of Checkpoints
+	var cpn := root.get_node_or_null("Checkpoints")
+	if cpn != null:
+		for c in cpn.get_children():
+			if c is Node2D:
+				cp_pos.append(_lv_point(c as Node2D, root))
 	# ---- the camera table: authored volumes if there are any, else derived
 	var vols: Array = []
 	var camn := root.get_node_or_null("Camera")
@@ -1923,7 +1966,7 @@ func _art_build() -> void:
 	for c in root.get_children():
 		if c.name == "Art":
 			continue
-		if not (c.name in ["Ground", "Islands", "Anchors", "Spawn", "Goal", "Camera", "Backdrop"]):
+		if not (c.name in ["Ground", "Islands", "Anchors", "Spawn", "Goal", "Bottom", "Checkpoints", "Camera", "Backdrop"]):
 			# Not a schema name: the loader never read it, so it was never
 			# collision, and it is not under Art, so it is not a picture. Say
 			# so rather than free it in silence - a node called Props with a
@@ -2275,15 +2318,553 @@ func cursor_m_per_px() -> float:
 	# sensitivity change - the same bug as zoom, through a different door.
 	# get_final_transform() is that stretch and nothing else: a Camera2D writes
 	# canvas_transform, which is not part of it.
-	return get_viewport().get_final_transform().get_scale().x / PPM_INPUT
+	return get_viewport().get_final_transform().get_scale().x / ppm_input
 
 func cursor_now() -> Vector2:
 	return cursor_of(body_pos, get_viewport().get_mouse_position(),
 		cursor_anchor_px(), cursor_m_per_px())
 # ---- end cursor ----
 
+# ================================================ CONTROL MODES (prototype) ==
+# Three candidate answers to a playtest's "pumping from no momentum is insanely
+# difficult", switchable live (1 2 3, L) so they can be felt side by side.
+# README "Control modes" has the measurements behind them; the short version:
+# the arm is an internal pair, so the two gestures a person tries first both
+# BRAKE the swing - pointing at the beam lengthens the pendulum, and pushing
+# the way you swing moves the body the other way - and the pump that works is
+# "reach down the rope as you pass the bottom", which nobody guesses.
+#
+#   1 CLASSIC       the game as it was. SPACE or LMB held = hand shut.
+#   2 PULL & REACH  SPACE (or RMB) held = hand shut. While hanging, LMB held
+#                   pulls you up the rope; the mouse can only let rope OUT
+#                   (its along-the-rope part is clamped toward the beam), so
+#                   the button is the one way to shorten and no mouse rest
+#                   hauls in secret.
+#   3 PULL-UP       SPACE or LMB closes the hand, and once a wrap takes it
+#                   STAYS shut with no button held. LMB held (a fresh click
+#                   after the catch) = pull up to your hands; LMB up = arms
+#                   straight toward the beam. The mouse keeps only the lean.
+#                   SPACE or RMB = let go. A trackpad slip costs a sliver of
+#                   pull, never the beam.
+#   L  FLIP THE LEAN  (any mode) ALIGN keeps its 25% of the sideways command
+#                   but with the sign reversed (align_w 1.25), so pushing the
+#                   mouse the way you swing adds swing instead of taking it.
+#
+# THE PULL MODES ARE INPUT, NOT SIMULATION. ctl_input only decides the
+# (cursor, grip) this tick hands step_tick - exactly the pair a tape records -
+# so every bench, gate and the golden hash (all of which call step_tick) are
+# untouched, and a tape made in any mode replays in any mode. The lean is the
+# one change inside the tick; the tape carries it as bit 2 of the grip byte
+# (tape_feed, tests/tapelib.gd verify), and bits 3-4 name the control mode
+# for whoever reads the tape afterwards. All of this state is in SNAP_SKIP:
+# the controls you play with are not the world you are in.
+enum Ctl { CLASSIC, PULL_REACH, PULL_UP }
+const CTL_NAME := ["CLASSIC", "PULL & REACH", "PULL-UP"]
+const CTL_HELP := [
+	"hold SPACE or click = hand",
+	"hold SPACE (or right mouse) = hand   hanging: hold click = pull up, mouse toward the beam = let rope out",
+	"SPACE or click = catch, the hand then stays shut   hold click = pull up, release = arms straight   SPACE or right-click = let go",
+]
+const ALIGN_W_FLIP := 1.25            # ALIGN_W's mirror about 1: the same 25%
+                                      # of sideways authority, the other sign
+const CTL_CFG := "user://whip_controls.cfg"
+var ctl: int = Ctl.CLASSIC
+var align_w := ALIGN_W                # what _align_target refuses; see L
+var ctl_prev := 0                     # last tick's buttons: 1 SPACE 2 LMB 4 RMB
+var ctl_catch_t := 0                  # PULL-UP: ticks left of a click's catch
+var ctl_hold_off := false             # PULL-UP: open after a let-go until all up
+var ctl_pull_armed := false           # PULL-UP: the pull wants a fresh click
+var ctl_pulling := false              # this tick's pull, for the HUD
+
+# ==================================================== FEEL OPTIONS (prototype) ==
+# Three answers to two playtest notes (README "Feel options"; the numbers are
+# tests/feel_probe.gd's). Each is a key, each is remembered, and each is OFF by
+# default, which is the game exactly as it was.
+#   C   CRACK AT 45 m/s instead of 24. Sound and flash only - nothing in the
+#       solver reads it. Tiny wiggles top out at 35-43 m/s and every one of
+#       them cracked at 24; real throws reach 38-91, and 34 of 36 still crack
+#       at 45.
+#   [ ] SENSITIVITY. The whole 1.15 m reach is 69 px of mouse at 100%, so a
+#       few millimetres of trackpad finger is most of an arm. Lower it and the
+#       same finger moves the hand less. Input only: the tape records where
+#       the hand was told to go, not the mouse, so replays do not care.
+#   P   SPRINGY STICK. While the handle is on rock, the body is off the
+#       ground and no wrap is engaged, the arm damps a quarter as much, so a
+#       stick planted as you land bounces you back up further: 1.66 m from a
+#       2-3 m fall instead of 1.16-1.29, and repeated hops level off under
+#       1.7 m, so a 2 m step still needs a door. A change to the tick; tapes
+#       carry it.
+# The tape's grip byte carries C as bit 5 and P as bit 6 (bits 0-4: grip,
+# reset, lean, control mode).
+const CRACK_SPEED_HI := 45.0
+const SENS_PPM := [60.0, 75.0, 90.0, 120.0]   # px per metre: 100 80 67 50 %
+var crack_speed := CRACK_SPEED
+var ppm_input := PPM_INPUT
+var stick_on := false
+var stick_c := 4.0                    # arm damping while planted (SPRING_C 17)
+# M  THE MOUSE FLIP (classic only). While your hand holds you on a wrap, the
+#    hand goes to the far side of your body from the mouse, so your BODY
+#    follows the mouse: pull the mouse up toward the beam and you haul up the
+#    rope, lean it the way you swing and you add to the swing - the two
+#    gestures that, measured, shrink the swing in plain classic (44 -> ~20 deg)
+#    and grow it here (to 105-130, landing the doors). Blended in over MIRROR_T
+#    ticks at the catch; held through the flight after a release; unwound
+#    over MIRROR_OUT_T once you are standing again with the mouse back near
+#    you. Input only.
+const MIRROR_T := 6
+const MIRROR_OUT_T := 30              # ticks to unwind, standing, mouse near you
+const MIRROR_NEAR := 0.35             # m: "near your body"
+var mirror_on := false
+var mirror_k := 0.0
+# P  THE STICK, cycled off -> springy -> HAMMER. The hammer is the handle
+#    reworked toward Getting Over It's: while it is on rock and no wrap holds
+#    you, the arm is a stiff, strongly damped servo and the handle grips - so
+#    with the stick planted your body sits where the mouse says, relative to
+#    it, one to one, and moving the mouse moves YOU. It is a SPEED servo, not
+#    a stiffer spring: the body is driven toward that spot at no more than
+#    hammer_vmax, because a stiff spring stores the whole reach as energy and
+#    measured, flung the body 2.7-3.6 m up - over every door's rise. It only
+#    engages when the mouse PRESSES the stick into the rock (the target more
+#    than hammer_press past the surface), so a whip laid back behind you before
+#    a throw is not a plant.
+var hammer_on := false
+var hammer_gain := 10.0               # 1/s: how hard the error is chased
+var hammer_vmax := 4.0                # m/s: the most the stick moves the body (and the hop)
+var hammer_tau := 0.05                # s: how fast the body reaches that speed
+var hammer_fmax := 560.0              # N  (F_MAX 320)
+var hammer_mu := 1.2                  # the planted handle's grip (ground_mu 0.30)
+var hammer_press := 0.30              # m past the surface before it is a plant
+var arm_damp := SPRING_C              # the arm's damping and force cap, as vars so
+var arm_cap := F_MAX                  # a bench can move them; defaults ARE the game
+var hang_damp := -1.0                 # < 0 = off. Otherwise the arm's damping and
+var hang_cap := F_MAX                 # cap while a wrap is engaged and you are off
+var hang_k := SPRING_K                # (and its stiffness, same switch)
+# H  FIRM HANG. While a wrap holds you and your feet are off the ground, the
+#    arm is firm and critically damped (K 1500, C 219 against 340 and 17), so
+#    your body sits 4-8 cm under your hand instead of bouncing 0-0.68 m on a
+#    loose spring every 0.6 s - measured, that bob was "super loose", and it
+#    was also most of the energy a parked swing lost (44 -> 33 deg over six
+#    half-swings with the game's arm, 45 -> 48 with this one). It rides on the
+#    tape's options byte, bit 0.
+const FIRM_K := 1500.0
+const FIRM_C := 219.0
+var firm_on := false
+# T  LOAD VIEW. Drawing only. While a wrap carries you, the rope from your
+#    hand to the wrap pulls thinner and paler as the load rises and shivers
+#    under a heavy one, and your body stretches along the rope as its weight
+#    hangs on it - more on a hard catch.
+var load_view := false
+var vis_load := 0.0                   # the load the drawing shows, smoothed per frame
+var rec_opt := PackedByteArray()      # the tape's per-tick options byte
+
+func firm_set(on: bool) -> void:
+	firm_on = on
+	_hang_arm()
+
+# S  STRETCHY ROPE. The rope between your hand and the wrap gives: a spring of
+#    STRETCH_K on how far your hand is past the rope's free length (5 cm under
+#    your weight), damped by STRETCH_C along the rope, stopped hard at
+#    STRETCH_MAX; the loaded run of rope may lengthen by up to STRETCH_SEG of
+#    itself so the stretch is in the rope you see. It firms your grip exactly
+#    as H does, so the give is in the rope and not in your arm - the soft arm
+#    bounced the body 0-0.68 m off the hand, which was the "super loose" part.
+#    On the tape's options byte, bit 1.
+const STRETCH_K := 1600.0
+const STRETCH_C := 40.0
+const STRETCH_MAX := 0.25
+const STRETCH_SEG := 0.10
+var stretch_on := false
+# J  THE JUMP (prototype). A hop off whatever floor you stand on: W, the up
+#    arrow or the right mouse button, read on the press and applied at the top
+#    of the next tick like R, so a tape carries it (options byte, bit 2) and
+#    a replay jumps on the same tick. Vertical jump_v plus jump_fwd of it
+#    toward the side the mouse is on. Only from a FLOOR (a contact whose
+#    outward normal points up), never off a wall or a ceiling, and never while
+#    the stick is planted. No cooldown state: one press, one hop, and you are
+#    airborne until you land. Timed against a catch, the hop's energy goes
+#    into the swing, which is what an uphill FLIGHT stage would ask for.
+var hud_full := false                 # F1: the controls and feel readout under the timer
+var pending_jump := false
+var jump_v := 3.5                     # m/s up: 0.6 m of hop on its own
+var jump_fwd := 0.5                   # of jump_v, sideways toward the mouse
+var rec_jumped := false               # this tick jumped (for the tape)
+var stretch_k := -1                   # this substep's loaded wrap (-1 none)
+var stretch_lidx := -1                # ...and the chain index where it holds
+
+func stretch_set(on: bool) -> void:
+	stretch_on = on
+	_hang_arm()
+
+func _hang_arm() -> void:
+	var firm := firm_on or stretch_on
+	hang_damp = FIRM_C if firm else -1.0
+	hang_k = FIRM_K if firm else SPRING_K
+	hang_cap = F_MAX
+
+## The loaded wrap and where on the chain it holds, chosen as ctl_load_point
+## chooses: the tightest engaged tether. Asked of this substep's state.
+func _stretch_pick() -> void:
+	stretch_k = -1
+	stretch_lidx = -1
+	if not stretch_on or not taut:
+		return
+	var best_s := 0.0
+	for k in a_pos.size():
+		if a_freelen[k] < 0.0:
+			continue
+		var li := a_pinidx[k] if a_pinidx[k] >= 0 else a_lockidx[k]
+		if li < 0:
+			continue
+		var lp: Vector2 = a_pinpt[k] if a_pinidx[k] >= 0 else a_pos[k] + (pos[a_lockidx[k]] - a_pos[k]).normalized() * a_r[k]
+		var slack := pos[0].distance_to(lp) - a_freelen[k]
+		if stretch_k < 0 or slack > best_s:
+			stretch_k = k
+			stretch_lidx = li
+			best_s = slack
+
+## The rope's pull on the handle: zero until the hand is past the free length.
+func _stretch_force(hvel: Vector2) -> Vector2:
+	if stretch_k < 0:
+		return Vector2.ZERO
+	var k := stretch_k
+	var lp: Vector2 = a_pinpt[k] if a_pinidx[k] >= 0 else a_pos[k] + (pos[a_lockidx[k]] - a_pos[k]).normalized() * a_r[k]
+	var d := pos[0] - lp
+	var l := d.length()
+	var e := l - a_freelen[k]
+	if e <= 0.0 or l < 0.0001:
+		return Vector2.ZERO
+	var u := d / l
+	return -u * (STRETCH_K * e + STRETCH_C * hvel.dot(u))
+                                      # the ground (the pump's arm)
+
+func _hanging() -> bool:
+	if grounded:
+		return false
+	for k in a_pos.size():
+		if a_freelen[k] >= 0.0:
+			return true
+	return false
+var stick_fmax := F_MAX              # arm force cap while planted: raising it
+                                      # measured no higher hop (feel_probe stick)
+
+func feel_save() -> void:
+	var cf := ConfigFile.new()
+	cf.load(CTL_CFG)
+	cf.set_value("controls", "mode", ctl)
+	cf.set_value("controls", "lean", ctl_lean())
+	cf.set_value("feel", "crack_hi", crack_speed != CRACK_SPEED)
+	cf.set_value("feel", "ppm", ppm_input)
+	cf.set_value("feel", "stick", stick_on)
+	cf.set_value("feel", "hammer", hammer_on)
+	cf.set_value("feel", "mirror", mirror_on)
+	cf.set_value("feel", "firm", firm_on)
+	cf.set_value("feel", "stretch", stretch_on)
+	cf.set_value("feel", "load_view", load_view)
+	cf.save(CTL_CFG)
+
+func feel_sens_step(d: int, persist := true) -> void:
+	var i := SENS_PPM.find(ppm_input)
+	if i < 0:
+		i = 0
+	ppm_input = SENS_PPM[clampi(i + d, 0, SENS_PPM.size() - 1)]
+	if persist:
+		feel_save()
+
+func feel_hud() -> String:
+	return "W / right-click = JUMP (%.1f m/s)   |   FEEL   S stretchy rope %s   |   H firm hang %s   |   T load view %s   |   M mouse flip %s   |   P stick %s   |   C crack %.0f m/s   |   [ ] %d%%" % [jump_v,
+		"ON" if stretch_on else "off",
+		"ON" if firm_on else "off", "ON" if load_view else "off",
+		"ON" if mirror_on else "off",
+		"HAMMER" if hammer_on else ("springy" if stick_on else "normal"),
+		crack_speed, roundi(PPM_INPUT / ppm_input * 100.0)]
+
+## Is the handle on rock? Stateless: asked of the geometry at the moment of use,
+## so it needs no snapshot and a restored run asks the same question.
+func _hand_on_rock() -> bool:
+	var p := pos[0]
+	var pr := p_rad[0] + 0.01
+	if cand_seg.size() != NP:
+		_cull_tick()
+	for sg: int in cand_seg[0]:
+		var A := t_a[sg]
+		var ab := t_b[sg] - A
+		var tt := clampf((p - A).dot(ab) / ab.length_squared(), 0.0, 1.0)
+		if p.distance_to(A + ab * tt) < pr:
+			return true
+	for j: int in cand_arc[0]:
+		if p.distance_to(t_arc_c[j]) < t_arc_r[j] + pr:
+			return true
+	return false
+
+## Is the body resting on a FLOOR? The nearest rock within a whisker of the
+## body whose outward normal points up. Walls and ceilings do not count.
+func _body_on_floor() -> bool:
+	# RESTING: a body already rising (a hop one tick ago) is not on the floor,
+	# whatever it still touches - measured, two presses one tick apart jumped twice
+	if absf((body_pos.y - body_prv.y) / SDT) > 0.5:
+		return false
+	var p := body_pos
+	var lim := BODY_R + 0.03
+	for sg in t_a.size():
+		var A := t_a[sg]
+		var B := t_b[sg]
+		if p.x < minf(A.x, B.x) - lim or p.x > maxf(A.x, B.x) + lim:
+			continue
+		if p.y < minf(A.y, B.y) - lim or p.y > maxf(A.y, B.y) + lim:
+			continue
+		var ab := B - A
+		var tt := clampf((p - A).dot(ab) / ab.length_squared(), 0.0, 1.0)
+		var d := p - (A + ab * tt)
+		if d.length() <= lim and d.normalized().y < -0.7:
+			return true
+	for j in t_arc_c.size():
+		var dj := p - t_arc_c[j]
+		if dj.length() <= t_arc_r[j] + lim and dj.normalized().y < -0.7:
+			return true
+	return false
+
+func _engaged_any() -> bool:
+	for k in a_pos.size():
+		if a_freelen[k] >= 0.0:
+			return true
+	return false
+
+## Where the planted hammer wants your body, as the handle-to-body command.
+## At rest it stays short of full reach: at full reach the spot is met exactly,
+## the press reads zero, the plant lets go, the body sags and the press returns
+## - a 4 cm bob, measured; short of it the plant holds dead still. Moving fast
+## with the mouse at the rim - a flick - it aims PAST full reach, so the servo
+## is still pushing at full speed when the plant lets go: that is the hop, as
+## fast as the flick and never faster than hammer_vmax (feet ~0.6 + v^2/2g).
+func _hammer_cmd(bvel: Vector2) -> Vector2:
+	var raw := target_m - body_pos
+	var l := raw.length()
+	if l < 0.0001:
+		return raw
+	var fast := clampf((bvel.length() - 0.5) / 1.0, 0.0, 1.0)
+	var rim := clampf((l - (REACH - 0.15)) / 0.15, 0.0, 1.0)
+	var still_reach := REACH - hammer_press - 0.10
+	return raw / l * minf(l, lerpf(still_reach, REACH + 0.4 * rim, fast))
+
+func _hammer_planted() -> bool:
+	if not hammer_on or _engaged_any():
+		return false
+	var nrm := _hand_rock_normal()
+	if nrm == Vector2.ZERO:
+		return false
+	return (target_m - pos[0]).dot(nrm) < -hammer_press
+
+## The outward normal of the rock the handle is touching, or ZERO. Stateless,
+## like _hand_on_rock: asked of the geometry at the moment of use.
+func _hand_rock_normal() -> Vector2:
+	var p := pos[0]
+	var pr := p_rad[0] + 0.01
+	if cand_seg.size() != NP:
+		_cull_tick()
+	for sg: int in cand_seg[0]:
+		var A := t_a[sg]
+		var ab := t_b[sg] - A
+		var tt := clampf((p - A).dot(ab) / ab.length_squared(), 0.0, 1.0)
+		var q := A + ab * tt
+		if p.distance_to(q) < pr:
+			return t_n[sg] if tt > 0.0 and tt < 1.0 else (p - q).normalized()
+	for j: int in cand_arc[0]:
+		var d := p - t_arc_c[j]
+		if d.length() < t_arc_r[j] + pr:
+			return d.normalized()
+	return Vector2.ZERO
+
+## the friction a particle meets on rock: the planted hammer's handle grips
+func _mu(i: int) -> float:
+	if i == 0 and hammer_on and _hammer_planted():
+		return hammer_mu
+	return ground_mu
+
+func _stick_planted() -> bool:
+	# Only with the BODY off the ground: a stick planted under a falling or
+	# bouncing body. A body standing on the floor while the handle drags
+	# through a throw's wind-up is not a plant, and measured, letting it count
+	# cost the first door one of its seven locking strokes.
+	if not stick_on or grounded:
+		return false
+	for k in a_pos.size():
+		if a_freelen[k] >= 0.0:
+			return false
+	return _hand_on_rock()
+
+func ctl_set(mode: int, lean: bool, persist := true) -> void:
+	ctl = mode
+	align_w = ALIGN_W_FLIP if lean else ALIGN_W
+	ctl_catch_t = 0
+	ctl_hold_off = false
+	ctl_pull_armed = false
+	if persist:
+		feel_save()
+
+func ctl_lean() -> bool:
+	return align_w != ALIGN_W
+
+func ctl_boot() -> void:
+	# the last mode you chose, then the command line over it:
+	#   -- --controls classic|pull-reach|pull-up  [--lean | --no-lean]
+	var mode := int(Ctl.CLASSIC)
+	var lean := true                      # the flipped lean playtested better
+	load_view = true                      # ...and so did the load view
+	crack_speed = CRACK_SPEED_HI          # a new player starts on the 45 m/s crack
+	stick_on = true                       # ...and the springy stick (playtested best)
+	hammer_on = false
+	stretch_set(true)                     # ...and the stretchy rope
+	var cf := ConfigFile.new()
+	if cf.load(CTL_CFG) == OK:
+		mode = clampi(int(cf.get_value("controls", "mode", 0)), 0, 2)
+		lean = bool(cf.get_value("controls", "lean", true))
+		crack_speed = CRACK_SPEED_HI if bool(cf.get_value("feel", "crack_hi", true)) else CRACK_SPEED
+		var pp := float(cf.get_value("feel", "ppm", PPM_INPUT))
+		ppm_input = pp if SENS_PPM.has(pp) else PPM_INPUT
+		stick_on = bool(cf.get_value("feel", "stick", true))
+		hammer_on = bool(cf.get_value("feel", "hammer", false)) and not stick_on
+		mirror_on = bool(cf.get_value("feel", "mirror", false))
+		firm_set(bool(cf.get_value("feel", "firm", false)))
+		stretch_set(bool(cf.get_value("feel", "stretch", true)))
+		load_view = bool(cf.get_value("feel", "load_view", true))
+		lean = bool(cf.get_value("controls", "lean", true))
+	var args := OS.get_cmdline_user_args()
+	for i in args.size():
+		if args[i] == "--controls" and i + 1 < args.size():
+			mode = maxi(0, ["classic", "pull-reach", "pull-up"].find(args[i + 1]))
+		elif args[i] == "--lean":
+			lean = true
+		elif args[i] == "--no-lean":
+			lean = false
+	ctl_set(mode, lean, false)
+
+func ctl_load_point() -> Vector2:
+	# The far end of the rope you hang from: the tightest ENGAGED tether's pin
+	# or lock point, chosen as _align_target chooses its load line but without
+	# the "loaded" test - a pull on the lip, where the floor still carries you,
+	# is the pull that matters most. NAN when nothing is engaged.
+	var best := -1
+	var best_s := 0.0
+	var pt := Vector2(NAN, NAN)
+	for k in a_pos.size():
+		if a_freelen[k] < 0.0:
+			continue
+		var lp: Vector2
+		if a_pinidx[k] >= 0:
+			lp = a_pinpt[k]
+		else:
+			var li := a_lockidx[k]
+			if li < 0:
+				continue
+			lp = a_pos[k] + (pos[li] - a_pos[k]).normalized() * a_r[k]
+		var slack := pos[0].distance_to(lp) - a_freelen[k]
+		if best < 0 or slack > best_s:
+			best = k
+			best_s = slack
+			pt = lp
+	return pt
+
+func _ctl_along(cur: Vector2, lp: Vector2, pull: bool, straight: bool) -> Vector2:
+	# Rebuild the hand command about the rope. u runs from the rope's far end
+	# to the body, i.e. DOWN the rope. The across part stays the mouse's (and
+	# step_tick's ALIGN still refuses align_w of it). The along part:
+	#   pull      +REACH down the rope - the arm pair hauls the body up to the
+	#             handle (bot_pump's sign check); the one way to shorten
+	#   straight  -REACH, arms straight toward the beam (PULL-UP, button up)
+	#   neither   the mouse's own along part, clamped to point toward the beam:
+	#             the mouse can let rope out and can no longer haul in
+	# Every result lies inside the reach circle, so it is a target the mouse
+	# could already produce: nothing here is a new capability, only a new
+	# way to reach an old one.
+	var r := body_pos - lp
+	var l := r.length()
+	if l < 0.05:
+		return cur
+	var u := r / l
+	var d := (cur - body_pos).limit_length(REACH)
+	var along := d.dot(u)
+	var across := d - u * along
+	var room := sqrt(maxf(REACH * REACH - across.length_squared(), 0.0))
+	if pull:
+		along = room
+	elif straight:
+		along = -room
+	else:
+		along = minf(along, 0.0)
+	ctl_pulling = pull
+	return body_pos + across + u * along
+
+func ctl_input(cur: Vector2, sp: bool, lmb: bool, rmb: bool) -> Array:
+	# (mouse cursor, buttons) -> the [cursor, grip] step_tick is fed this tick
+	var btn := (1 if sp else 0) | (2 if lmb else 0) | (4 if rmb else 0)
+	var edge := btn & ~ctl_prev
+	ctl_prev = btn
+	ctl_pulling = false
+	if ctl == Ctl.CLASSIC:
+		if not mirror_on and mirror_k <= 0.0:
+			return [cur, sp or lmb]
+		var grip := sp or lmb
+		# On while a wrap holds you, and it STAYS on through the flight after
+		# you let go, until your body is back on the ground. Unwinding it in
+		# the air swings the hand across your body and the arm kicks you the
+		# other way - measured, every release with the mouse left where it was
+		# then fell short into the shaft.
+		# And on the ground it unwinds only once the mouse is back near your
+		# body, slowly: unwinding with the mouse held out swings the hand
+		# across and shoves you back off the edge you just landed on.
+		var near := (cur - body_pos).length() < MIRROR_NEAR
+		var hang := mirror_on and ((grip and not is_nan(ctl_load_point().x))
+			or (mirror_k > 0.0 and (not grounded or not near)))
+		mirror_k = clampf(mirror_k + (1.0 / float(MIRROR_T) if hang else -1.0 / float(MIRROR_OUT_T)), 0.0, 1.0)
+		if mirror_k > 0.0:
+			cur = cur.lerp(body_pos * 2.0 - cur, mirror_k)
+		return [cur, grip]
+	var lp := ctl_load_point()
+	var engaged := not is_nan(lp.x)
+	if ctl == Ctl.PULL_REACH:
+		var hand := sp or rmb
+		if hand and taut and engaged:
+			return [_ctl_along(cur, lp, lmb, false), true]
+		return [cur, hand]
+	# PULL-UP
+	if taut and engaged:
+		ctl_catch_t = 0
+		if (edge & 5) != 0:
+			# a fresh SPACE or right click: let go, and stay open until every
+			# button is up, so the same press cannot catch the next beam
+			ctl_hold_off = true
+			ctl_pull_armed = false
+			return [cur, false]
+		if not lmb:
+			ctl_pull_armed = true
+		return [_ctl_along(cur, lp, lmb and ctl_pull_armed, true), true]
+	ctl_pull_armed = false
+	if ctl_hold_off:
+		if btn == 0:
+			ctl_hold_off = false
+		return [cur, false]
+	if (edge & 3) != 0:
+		# a press closes the hand for the whole catch window even if the
+		# button is already back up - a trackpad tap is a catch
+		ctl_catch_t = GRIP_WINDOW
+	var shut := sp or lmb or ctl_catch_t > 0
+	if ctl_catch_t > 0:
+		ctl_catch_t -= 1
+	return [cur, shut]
+
+func ctl_hud() -> String:
+	if ctl == Ctl.CLASSIC and not ctl_lean():
+		return "controls 1 CLASSIC: hold SPACE or click = hand      [1 2 3 = control modes   L = lean   S H T M P C [ ] = feel]\n" + feel_hud()
+	return feel_hud() + "\n" + "CONTROLS %d %s%s: %s%s      [1 2 3 = controls   L = lean %s]" % [
+		int(ctl) + 1, CTL_NAME[ctl], "  + FLIPPED LEAN" if ctl_lean() else "",
+		CTL_HELP[ctl], "   PULLING" if ctl_pulling else "",
+		"flipped: push the way you swing" if ctl_lean() else "normal"]
+
 # ------------------------------------------------------------------- input --
 func _input(event: InputEvent) -> void:
+	if event is InputEventMouseButton and event.pressed and not play_on:
+		if event.button_index == MOUSE_BUTTON_RIGHT and ctl == Ctl.CLASSIC:
+			pending_jump = true
 	if event is InputEventKey and event.pressed and not event.echo:
 		if event.keycode == KEY_R:
 			# DEFERRED, so that restarting is part of a TICK. R is the one verb
@@ -2292,6 +2873,53 @@ func _input(event: InputEvent) -> void:
 			# never restarted - silently, and wrongly. Applying it at the top of
 			# step_tick puts it inside the recorded input stream instead.
 			pending_reset = true
+		elif event.keycode == KEY_1 or event.keycode == KEY_2 or event.keycode == KEY_3:
+			if not play_on:
+				ctl_set(event.keycode - KEY_1, ctl_lean())
+		elif event.keycode == KEY_L:
+			if not play_on:
+				ctl_set(ctl, not ctl_lean())
+		elif event.keycode == KEY_C and not play_on:
+			crack_speed = CRACK_SPEED if crack_speed != CRACK_SPEED else CRACK_SPEED_HI
+			feel_save()
+		elif event.keycode == KEY_BRACKETLEFT and not play_on:
+			feel_sens_step(1)             # [ = less sensitive
+		elif event.keycode == KEY_BRACKETRIGHT and not play_on:
+			feel_sens_step(-1)            # ] = more sensitive
+		elif event.keycode == KEY_P and not play_on:
+			# off -> springy -> hammer -> off
+			if not stick_on and not hammer_on:
+				stick_on = true
+			elif stick_on:
+				stick_on = false
+				hammer_on = true
+			else:
+				hammer_on = false
+			feel_save()
+		elif event.keycode == KEY_M and not play_on:
+			mirror_on = not mirror_on
+			feel_save()
+		elif event.keycode == KEY_H and not play_on:
+			firm_set(not firm_on)
+			feel_save()
+		elif event.keycode == KEY_T:
+			load_view = not load_view
+			feel_save()
+		elif event.keycode == KEY_S and not play_on:
+			stretch_set(not stretch_on)
+			feel_save()
+		elif (event.keycode == KEY_W or event.keycode == KEY_UP) and not play_on:
+			pending_jump = true
+		elif event.keycode == KEY_F1:
+			hud_full = not hud_full
+		elif event.keycode == KEY_F11:
+			# FULLSCREEN, toggled. A window matter and not a tick: the sim
+			# never reads the window, and the cursor keeps its 16.7 mm per
+			# PHYSICAL pixel whatever the size (cursor_m_per_px multiplies the
+			# stretch back in; cam_gate C2 asserts it at three widths).
+			var full := DisplayServer.window_get_mode() == DisplayServer.WINDOW_MODE_FULLSCREEN 				or DisplayServer.window_get_mode() == DisplayServer.WINDOW_MODE_EXCLUSIVE_FULLSCREEN
+			DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_WINDOWED if full
+				else DisplayServer.WINDOW_MODE_FULLSCREEN)
 		elif (event.keycode == KEY_F or event.keycode == KEY_G) and rec_on:
 			# MARK THIS MOMENT, AND SAY WHICH KIND IT WAS. Guarded on rec_on, so
 			# the keys are inert in an ordinary session and the game is
@@ -2324,9 +2952,10 @@ func _physics_process(_d: float) -> void:
 	if play_done:
 		_av_hush()                    # ...but it does not hold its last NOISE
 		return                        # a finished replay holds its last frame
-	var grip := Input.is_key_pressed(KEY_SPACE) \
-		or Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT)
-	step_tick(cursor_now(), grip)
+	var io := ctl_input(cursor_now(), Input.is_key_pressed(KEY_SPACE),
+		Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT),
+		Input.is_mouse_button_pressed(MOUSE_BUTTON_RIGHT))
+	step_tick(io[0], io[1])
 	# Stepped with the FIXED tick, not the frame delta: the camera advances once
 	# per simulation tick, so the same run frames identically every time it is
 	# replayed, and a dropped frame cannot smear the shot.
@@ -2369,7 +2998,7 @@ func _process(d: float) -> void:
 			line += "   [REPLAY %d/%d]" % [play_at, int(play_tape["n"])]
 		elif play_done:
 			line += "   [REPLAY ENDED]"
-		status.text = line
+		status.text = line + ("\n" + ctl_hud() if hud_full else "")
 
 # ---------------------------------------------------------------- sim tick --
 func step_tick(cursor_world_m: Vector2, grip: bool) -> void:
@@ -2382,6 +3011,14 @@ func step_tick(cursor_world_m: Vector2, grip: bool) -> void:
 	taut = grip
 	cursor_m = cursor_world_m
 	target_m = body_pos + (cursor_m - body_pos).limit_length(REACH)
+	rec_jumped = false
+	if pending_jump:
+		pending_jump = false
+		if _body_on_floor() and not (hammer_on and _hammer_planted()):
+			var side := signf(cursor_m.x - body_pos.x)
+			var jv := Vector2(jump_fwd * jump_v * side, -jump_v)
+			body_prv -= jv * SDT          # verlet: velocity lives in the gap
+			rec_jumped = true
 	_align_target()
 	if not finished:
 		run_ticks += 1
@@ -2437,7 +3074,7 @@ func _align_target() -> void:
 	# nothing. Computed here, a parked cursor gives target_m == body_pos, the
 	# across component is exactly zero, and the tick is bit-identical to the
 	# arm without this fix.
-	if not taut or ALIGN_W <= 0.0:
+	if not taut or align_w <= 0.0:
 		return
 	var d := target_m - body_pos
 	if d.length_squared() < 1e-12:
@@ -2490,16 +3127,37 @@ func _align_target() -> void:
 	# attributable to the one command ALIGN means to refuse.
 	if across.length() < ALIGN_DEAD:
 		return
-	target_m -= across * ALIGN_W
+	target_m -= across * align_w
 
 func _substep() -> void:
 	# --- forces -> integrate (verlet) ---
 	var hvel := (pos[0] - prv[0]) / SDT
 	var bvel := (body_pos - body_prv) / SDT
-	var f := (target_m - pos[0]) * SPRING_K - (hvel - bvel) * SPRING_C
-	f = f.limit_length(F_MAX)
+	var arm_k := SPRING_K
+	var arm_c := arm_damp
+	var arm_fmax := arm_cap
+	var hammered := hammer_on and _hammer_planted()
+	if hang_damp >= 0.0 and _hanging():
+		arm_c = hang_damp              # PUMP prototype: the arm on a hang
+		arm_fmax = hang_cap
+		arm_k = hang_k
+	if stick_on and _stick_planted():
+		arm_c = stick_c                # P: the springy stick, planted
+		arm_fmax = stick_fmax
+	var f := (target_m - pos[0]) * arm_k - (hvel - bvel) * arm_c
+	f = f.limit_length(arm_fmax)
+	if hammered:
+		# P: the hammer. Where the mouse puts your body relative to the planted
+		# handle is pos[0] - (target_m - body_pos); chase it at <= hammer_vmax.
+		# f is the force on the handle; the body gets -f, as always.
+		var vd := ((pos[0] - _hammer_cmd(bvel) - body_pos) * hammer_gain).limit_length(hammer_vmax)
+		f = (-(vd - bvel) * (BODY_M / hammer_tau)).limit_length(hammer_fmax)
 
-	var np := pos[0] + (pos[0] - prv[0]) + (GRAV + f * inv_m[0]) * SDT * SDT
+	var rope_f := Vector2.ZERO
+	if stretch_on:
+		_stretch_pick()
+		rope_f = _stretch_force(hvel)
+	var np := pos[0] + (pos[0] - prv[0]) + (GRAV + (f + rope_f) * inv_m[0]) * SDT * SDT
 	prv[0] = pos[0]
 	pos[0] = np
 	for i in range(1, NP):
@@ -2548,10 +3206,13 @@ func _solve_arm() -> void:
 func _solve_rope(i: int, stiff: float) -> void:
 	var d := pos[i + 1] - pos[i]
 	var l := d.length()
-	if l > rest[i] and l > 0.0001:
+	var r := rest[i]
+	if stretch_on and i < stretch_lidx:
+		r *= 1.0 + STRETCH_SEG            # S: the loaded run of rope gives
+	if l > r and l > 0.0001:
 		var w1 := inv_m[i]
 		var w2 := inv_m[i + 1]
-		var corr := d * ((l - rest[i]) / l * stiff / (w1 + w2))
+		var corr := d * ((l - r) / l * stiff / (w1 + w2))
 		pos[i] += corr * w1
 		pos[i + 1] -= corr * w2
 
@@ -2576,8 +3237,9 @@ func _solve_lra() -> void:
 			lockpt = a_pos[k] + (pos[li] - a_pos[k]).normalized() * a_r[k]
 		var d := pos[0] - lockpt
 		var l := d.length()
-		if l > a_freelen[k] and l > 0.0001:
-			pos[0] -= d * ((l - a_freelen[k]) / l)
+		var lim := a_freelen[k] + (STRETCH_MAX if stretch_on else 0.0)
+		if l > lim and l > 0.0001:
+			pos[0] -= d * ((l - lim) / l)
 
 func _collide() -> void:
 	# Anti-tunnel sweeps run FIRST, over the whole chain: they need prv to
@@ -2697,10 +3359,10 @@ func _collide_point(i: int, pr: float) -> void:
 					var lift := minf(pr - sd, pr)
 					pos[i] = q + n * pr
 					prv[i] = pos[i] - (v + n * lift)
-					_friction(i, n, ground_mu, lift)
+					_friction(i, n, _mu(i), lift)
 				else:
 					pos[i] = q + n * pr
-					_friction(i, n, ground_mu, pr - sd)
+					_friction(i, n, _mu(i), pr - sd)
 				p = pos[i]
 				if av_on:
 					av_touch[i] = 1   # instrumentation only; see _av_tick
@@ -2710,7 +3372,7 @@ func _collide_point(i: int, pr: float) -> void:
 			if l < pr and l > 0.0001:
 				var n2 := d / l
 				pos[i] = q + n2 * pr
-				_friction(i, n2, ground_mu, pr - l)
+				_friction(i, n2, _mu(i), pr - l)
 				p = pos[i]
 				if av_on:
 					av_touch[i] = 1
@@ -2752,7 +3414,7 @@ func _collide_point(i: int, pr: float) -> void:
 	# A FILLET IS TERRAIN: ground friction, the grit voice, and nothing the
 	# catch machinery reads. Same push as a beam, by the same function.
 	for j: int in cand_arc[i]:
-		if _circle_out(i, t_arc_c[j], t_arc_r[j] + pr, ground_mu) and av_on:
+		if _circle_out(i, t_arc_c[j], t_arc_r[j] + pr, _mu(i)) and av_on:
 			av_touch[i] = 1
 
 func _circle_out(i: int, c: Vector2, rr: float, mu: float) -> bool:
@@ -3445,7 +4107,7 @@ func _advance_pin(k: int) -> void:
 func _events() -> void:
 	crack_cooldown = maxf(0.0, crack_cooldown - DT)
 	crack_flash = maxf(0.0, crack_flash - DT * 3.0)
-	if tip_speed > CRACK_SPEED and crack_cooldown <= 0.0:
+	if tip_speed > crack_speed and crack_cooldown <= 0.0:
 		crack_cooldown = 0.3
 		crack_flash = 1.0
 	for k in a_pos.size():
@@ -3458,6 +4120,13 @@ func _events() -> void:
 	# of the map). Move body AND chain rigidly at rest and drop every wrap -
 	# teleporting the body alone would leave the whip metres away and the arm
 	# tether would fire it across the level.
+	# CHECKPOINTS: standing within CP_R of one moves spawn there, so the
+	# fall below is to the last one reached, not the level's start. Only the
+	# body's own feet count: a swing through one changes nothing.
+	if grounded and cp_pos.size() > 0:
+		for c in cp_pos:
+			if c != spawn and c.distance_to(body_pos) < CP_R:
+				spawn = c
 	if body_pos.y > world_bottom:
 		falls += 1
 		teleport(spawn)
@@ -3602,10 +4271,48 @@ func _draw() -> void:
 	var slack_col := Color(0.78, 0.72, 0.6)
 	var taut_col := Color(0.95, 0.45, 0.25)
 	var col_now := taut_col if taut else slack_col
+	# T: the load the drawing shows, eased per frame so a one-tick spike reads
+	# as a jolt rather than a flicker. 0 at no load, 1 at the arm's cap
+	# (320 N), up to 2 on a hard catch.
+	var lidx := -1
+	var want := 0.0
+	if load_view:
+		for k in a_pos.size():
+			if a_freelen[k] >= 0.0:
+				lidx = a_pinidx[k] if a_pinidx[k] >= 0 else a_lockidx[k]
+				want = clampf(av_tension / LOAD_HI, 0.0, 2.0)
+				break
+	vis_load = lerpf(vis_load, want, 0.35 if want > vis_load else 0.12)
+	var vl := clampf(vis_load, 0.0, 1.0)
+	var strain_col := Color(1.0, 0.94, 0.82)
+	var shiver := 1.8 * clampf((vis_load - 0.5) / 0.5, 0.0, 1.0)
+	# THE BELLY, DRAWN OUT. The tether is the chord at the catch, so the rope
+	# you threw past it stays in the loaded span as a wavy belly forever - the
+	# catch-at-chord contract, kept because the honest tether killed the pump.
+	# A loaded rope that wanders reads as an unloaded one, so under load the
+	# drawing pulls that span toward the chord, more as the load rises. The
+	# particles are where they are; only the picture straightens.
+	var dp := PackedVector2Array()
+	if load_view and lidx > 0:
+		var lp := ctl_load_point()
+		var straighten := 0.9 * smoothstep(0.08, 0.45, vis_load)
+		var span := maxf(cum_len[mini(lidx, NP - 1)], 0.001)
+		for i in mini(lidx, NP - 1) + 1:
+			var chord: Vector2 = pos[0].lerp(lp, cum_len[i] / span) if not is_nan(lp.x) else pos[i]
+			dp.append(pos[i].lerp(chord, straighten) * PPM)
 	for i in NSEG:
 		var w := lerpf(6.0, 2.0, float(i) / float(NSEG - 1))
-		draw_line(pos[i] * PPM, pos[i + 1] * PPM, col_now, w)
-	if av_on:
+		if load_view and lidx > 0 and i < lidx and i + 1 < dp.size():
+			# the loaded rope: straighter, thinner, paler, shivering when heavy
+			var a := dp[i]
+			var b := dp[i + 1]
+			var nrm := (b - a).orthogonal().normalized()
+			var jig := nrm * shiver * sin(float(tick_count) * 1.9 + float(i) * 1.3)
+			draw_line(a + jig, b - jig, col_now.lerp(strain_col, vl),
+				w * lerpf(1.0, 0.55, vl))
+		else:
+			draw_line(pos[i] * PPM, pos[i + 1] * PPM, col_now, w)
+	if av_on and not load_view:
 		# TENSION, drawn along the rope that is carrying it - the twin of the
 		# load hum, from the same newtons on the same tick. It runs from your
 		# hand to the wrap because that is the stretch under load; the tail
@@ -3642,7 +4349,15 @@ func _draw() -> void:
 
 	# body: a stoic capsule with a face (dignity is the comedy)
 	var bp := body_pos * PPM
-	draw_circle(bp, BODY_R * PPM, Color(0.85, 0.82, 0.75))
+	if load_view and vis_load > 0.01:
+		# T: the body stretches along the line of the load, area kept
+		var u := pos[0] - body_pos
+		var st := 1.0 + 0.12 * vis_load
+		draw_set_transform(bp, u.angle() if u.length() > 0.01 else 0.0, Vector2(st, 1.0 / st))
+		draw_circle(Vector2.ZERO, BODY_R * PPM, Color(0.85, 0.82, 0.75))
+		draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
+	else:
+		draw_circle(bp, BODY_R * PPM, Color(0.85, 0.82, 0.75))
 	draw_circle(bp + Vector2(4, -4), 2.2, Color(0.15, 0.15, 0.18))
 	draw_circle(bp + Vector2(11, -4), 2.2, Color(0.15, 0.15, 0.18))
 	# arm hint: body -> handle
@@ -3914,7 +4629,7 @@ func _av_tick() -> void:
 	# tip reaches 3.6x the threshold, so a flat bang threw away the whole top
 	# of the range - and that range IS the skill bell.
 	if crack_flash >= 1.0 and av_flash0 < 1.0:
-		av_over = sqrt(clampf((tip_speed / CRACK_SPEED - 1.0)
+		av_over = sqrt(clampf((tip_speed / crack_speed - 1.0)
 			/ (CRACK_OVER - 1.0), 0.0, 1.0))
 		if sfx_crack != null:
 			sfx_crack.volume_db = lerpf(CRACK_DB.x, CRACK_DB.y, av_over)
@@ -4343,7 +5058,7 @@ const SNAP_SKIP := ["external_drive", "save_enabled", "save_path", "save_due",
 	"t_arc_c", "t_arc_r", "t_arc_ang", "t_deep", "bd_poly", "bd_col",
 	"cam_vols",
 	# SCENE-LEVEL FURNITURE: why a scene was refused, and its caption block.
-	"level_err", "level_hud",
+	"level_err", "level_hud", "spawn0",
 	# THE ART LAYER: a picture, and whether _draw paints the grey world under
 	# it. Neither is read by a tick (art_gate A2 runs the hash with the layer
 	# forced on), and the instance itself is an Object, which snap_keys skips.
@@ -4360,6 +5075,16 @@ const SNAP_SKIP := ["external_drive", "save_enabled", "save_path", "save_due",
 	"rec_note", "rec_cen", "rec_prev", "rec_rst", "rec_mark", "rec_mkind",
 	"rec_mk",
 	"play_on", "play_done", "play_tape", "play_at",
+	"cp_pos",
+	"ctl", "align_w", "ctl_prev", "ctl_catch_t", "ctl_hold_off",
+	"ctl_pull_armed", "ctl_pulling",
+	"crack_speed", "ppm_input", "stick_on", "stick_c", "stick_fmax",
+	"mirror_on", "mirror_k", "hammer_on", "hammer_gain", "hammer_vmax", "hammer_tau",
+	"hammer_fmax", "hammer_mu", "hammer_press",
+	"arm_damp", "arm_cap", "hang_damp", "hang_cap", "hang_k",
+	"firm_on", "load_view", "vis_load", "rec_opt",
+	"stretch_on", "stretch_k", "stretch_lidx",
+	"pending_jump", "jump_v", "jump_fwd", "rec_jumped", "hud_full",
 	# AUDIO AND ITS VISUAL TWINS ARE NOT THE SIMULATION. Every one of these is
 	# derived from a finished tick and feeds nothing back, so none of them
 	# belongs in a save - and leaving them out is not merely tidy, it is what
@@ -4459,8 +5184,12 @@ func level_fingerprint() -> int:
 		h = _fnv(h, t_b[i].x); h = _fnv(h, t_b[i].y)
 	for k in a_pos.size():
 		h = _fnv(h, a_pos[k].x); h = _fnv(h, a_pos[k].y); h = _fnv(h, a_r[k])
-	h = _fnv(h, spawn.x); h = _fnv(h, spawn.y)
+	h = _fnv(h, spawn0.x); h = _fnv(h, spawn0.y)
 	h = _fnv(h, goal_x); h = _fnv(h, world_bottom)
+	if cp_pos.size() > 0:
+		h = _fnv(h, float(cp_pos.size()))
+		for c in cp_pos:
+			h = _fnv(h, c.x); h = _fnv(h, c.y)
 	# The arcs are folded in ONLY when there are any. Folding in an empty
 	# count would still be one more _fnv on the shipped level, and its number
 	# is 8896234646103814336 in six tapes and the player's save.
@@ -4567,6 +5296,7 @@ func rec_begin(note := "") -> void:
 	rec_note = note
 	rec_cur = PackedVector2Array()
 	rec_grip = PackedByteArray()
+	rec_opt = PackedByteArray()
 	rec_chk = PackedInt64Array()
 	rec_cen = {"catch": 0, "lock": 0, "pay": 0, "slide": 0, "dismount": 0,
 		"unwind": 0, "fall": 0, "crack": 0, "gnd": 0, "air": 0, "wrapped": 0,
@@ -4597,7 +5327,11 @@ func rec_end() -> void:
 
 func _rec_tick() -> void:
 	rec_cur.append(cursor_m)
-	rec_grip.append((1 if taut else 0) | (2 if rec_rst else 0))
+	rec_opt.append((1 if firm_on else 0) | (2 if stretch_on else 0) | (4 if rec_jumped else 0))
+	rec_grip.append((1 if taut else 0) | (2 if rec_rst else 0)
+		| (4 if ctl_lean() else 0) | (int(ctl) << 3)
+		| (32 if crack_speed != CRACK_SPEED else 0) | (64 if stick_on else 0)
+		| (128 if hammer_on else 0))
 	# Stamped against the tick that has JUST FINISHED - the same tick the ring
 	# the player is complaining about was drawn from - and stored beside the
 	# stream, never in it, so the mark cannot change what the sim was fed.
@@ -4686,6 +5420,7 @@ func tape_of() -> Dictionary:
 		"cen": rec_cen.duplicate(), "start": rec_start,
 		"cur": rec_cur.duplicate(), "grip": rec_grip.duplicate(),
 		"mark": rec_mark.duplicate(), "mkind": rec_mkind.duplicate(),
+		"opt": rec_opt.duplicate(),
 		"ok": true, "err": ""}
 
 func tape_save(path: String) -> bool:
@@ -4711,6 +5446,10 @@ func tape_save(path: String) -> bool:
 	# the simulation never reads.
 	f.store_var(t["mark"])
 	f.store_var(t["mkind"])
+	# The per-tick OPTIONS byte, appended last for the same reason as the
+	# marks: bit 0 = firm hang. A tape without it is a tape with every option
+	# off, which is exactly what it was recorded with.
+	f.store_var(t["opt"])
 	f.close()
 	return true
 
@@ -4764,6 +5503,12 @@ static func tape_load(path: String) -> Dictionary:
 	while mkinds.size() < nmark:
 		mkinds.append(0)
 	t["mkind"] = mkinds
+	var opt := PackedByteArray()
+	if f.get_position() < f.get_length():
+		var ov: Variant = f.get_var()
+		if typeof(ov) == TYPE_PACKED_BYTE_ARRAY:
+			opt = ov
+	t["opt"] = opt
 	if typeof(t["cur"]) != TYPE_PACKED_VECTOR2_ARRAY \
 			or typeof(t["grip"]) != TYPE_PACKED_BYTE_ARRAY \
 			or (t["cur"] as PackedVector2Array).size() != int(t["n"]) \
@@ -4794,6 +5539,14 @@ func tape_feed() -> bool:
 	if play_at >= cur.size():
 		return false
 	pending_reset = (grp[play_at] & 2) != 0
+	align_w = ALIGN_W_FLIP if (grp[play_at] & 4) != 0 else ALIGN_W
+	crack_speed = CRACK_SPEED_HI if (grp[play_at] & 32) != 0 else CRACK_SPEED
+	stick_on = (grp[play_at] & 64) != 0
+	hammer_on = (grp[play_at] & 128) != 0
+	var opt: PackedByteArray = play_tape.get("opt", PackedByteArray())
+	firm_set(play_at < opt.size() and (opt[play_at] & 1) != 0)
+	stretch_set(play_at < opt.size() and (opt[play_at] & 2) != 0)
+	pending_jump = play_at < opt.size() and (opt[play_at] & 4) != 0
 	step_tick(cur[play_at], (grp[play_at] & 1) != 0)
 	play_at += 1
 	return true
@@ -4832,11 +5585,12 @@ func _boot_session() -> void:
 			pp = nxt; i += 1
 		elif a == "--note":
 			note = nxt; i += 1
-		elif a == "--level":
-			# already consumed by _cmdline_level() before the level was built;
-			# swallow its argument here so it cannot be read as another flag
+		elif a == "--level" or a == "--controls":
+			# already consumed (_cmdline_level before the level was built,
+			# ctl_boot below); swallow the argument so it is not read as a flag
 			i += 1
 		i += 1
+	ctl_boot()
 	if pp != "":
 		# A REPLAY NEVER WRITES YOUR SAVE. Watching a tape is not playing - and
 		# a replay that FAILS to start does not write it either, which is why

@@ -30,3 +30,6 @@ takes/
 # and are committed; tests/ scripts run by path and never by uid
 tests/*.uid
 tests/**/*.uid
+
+# gen_mountain.py --out round-trip scratch scenes (levels/_steps_rt.tscn and kin)
+levels/_*.tscn

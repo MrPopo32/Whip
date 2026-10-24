@@ -1,5 +1,7 @@
 extends SceneTree
-## THE ONE COMMAND. Replays every tape in res://tapes/ and fails loudly if the
+## THE ONE COMMAND. Replays every tape in res://tapes/ (the shipped level's
+## corpus) and every res://levels/<name>.tape (a level's own recorded run,
+## beside the level: levels/demo.tape is the demo's) and fails loudly if the
 ## game no longer does what it did when they were recorded.
 ##
 ##   godot --headless --path . -s res://tests/tape_verify.gd
@@ -47,6 +49,13 @@ func _initialize() -> void:
 			if f.ends_with(".tape"):
 				paths.append("%s/%s" % [DIR, f])
 		paths.sort()
+		var dl := DirAccess.open("res://levels")
+		if dl != null:
+			var lv: Array = Array(dl.get_files())
+			lv.sort()
+			for f: String in lv:
+				if f.ends_with(".tape"):
+					paths.append("res://levels/" + f)
 	else:
 		for a: String in args:
 			if a.begins_with("res://") or a.begins_with("user://") \

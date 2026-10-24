@@ -1,0 +1,345 @@
+{
+ "stages": [
+  {
+   "i": 0,
+   "section": "glide",
+   "kind": "glide",
+   "policy": "park",
+   "drop": 1.5,
+   "lip_x": 0.0,
+   "shelf_y": 0.0,
+   "beam": [
+    2.5,
+    -0.5
+   ],
+   "target": {
+    "x0": 4.6,
+    "x1": 12.6,
+    "y": 1.5
+   }
+  },
+  {
+   "i": 1,
+   "section": "glide",
+   "kind": "glide",
+   "policy": "park",
+   "drop": 1.5,
+   "lip_x": 12.6,
+   "shelf_y": 1.5,
+   "beam": [
+    15.1,
+    1.0
+   ],
+   "target": {
+    "x0": 17.2,
+    "x1": 25.2,
+    "y": 3.0
+   }
+  },
+  {
+   "i": 2,
+   "section": "hold",
+   "kind": "hold",
+   "policy": "tug",
+   "drop": 0.0,
+   "lip_x": 25.2,
+   "shelf_y": 3.0,
+   "beam": [
+    27.7,
+    2.5
+   ],
+   "target": {
+    "x0": 30.6,
+    "x1": 38.6,
+    "y": 3.0
+   }
+  },
+  {
+   "i": 3,
+   "section": "hold",
+   "kind": "hold",
+   "policy": "tug",
+   "drop": 0.0,
+   "lip_x": 38.6,
+   "shelf_y": 3.0,
+   "beam": [
+    41.1,
+    2.5
+   ],
+   "target": {
+    "x0": 44.0,
+    "x1": 52.0,
+    "y": 3.0
+   }
+  },
+  {
+   "i": 4,
+   "section": "hold",
+   "kind": "hold",
+   "policy": "tug",
+   "drop": 0.0,
+   "lip_x": 52.0,
+   "shelf_y": 3.0,
+   "beam": [
+    54.5,
+    2.5
+   ],
+   "target": {
+    "x0": 57.4,
+    "x1": 65.4,
+    "y": 3.0
+   }
+  },
+  {
+   "i": 5,
+   "section": "rise",
+   "kind": "rise",
+   "policy": "tug",
+   "drop": -1.0,
+   "lip_x": 65.4,
+   "shelf_y": 3.0,
+   "beam": [
+    67.9,
+    2.0
+   ],
+   "target": {
+    "x0": 70.7,
+    "x1": 78.7,
+    "y": 2.0
+   }
+  },
+  {
+   "i": 6,
+   "section": "rise",
+   "kind": "rise",
+   "policy": "tug",
+   "drop": -1.0,
+   "lip_x": 78.7,
+   "shelf_y": 2.0,
+   "beam": [
+    81.2,
+    1.0
+   ],
+   "target": {
+    "x0": 84.0,
+    "x1": 92.0,
+    "y": 1.0
+   }
+  },
+  {
+   "i": 7,
+   "section": "rise",
+   "kind": "rise",
+   "policy": "tug",
+   "drop": -1.0,
+   "lip_x": 92.0,
+   "shelf_y": 1.0,
+   "beam": [
+    94.5,
+    0.0
+   ],
+   "target": {
+    "x0": 97.3,
+    "x1": 105.3,
+    "y": 0.0
+   }
+  },
+  {
+   "i": 8,
+   "section": "rise",
+   "kind": "rise",
+   "policy": "tug",
+   "drop": -1.0,
+   "lip_x": 105.3,
+   "shelf_y": 0.0,
+   "beam": [
+    107.8,
+    -1.0
+   ],
+   "target": {
+    "x0": 110.6,
+    "x1": 118.6,
+    "y": -1.0
+   }
+  },
+  {
+   "i": 9,
+   "section": "rise",
+   "kind": "rise",
+   "policy": "tug",
+   "drop": -1.0,
+   "lip_x": 118.6,
+   "shelf_y": -1.0,
+   "beam": [
+    121.1,
+    -2.0
+   ],
+   "target": {
+    "x0": 123.9,
+    "x1": 131.9,
+    "y": -2.0
+   }
+  },
+  {
+   "i": 10,
+   "section": "rise",
+   "kind": "rise",
+   "policy": "tug",
+   "drop": -1.0,
+   "lip_x": 131.9,
+   "shelf_y": -2.0,
+   "beam": [
+    134.4,
+    -3.0
+   ],
+   "target": {
+    "x0": 137.2,
+    "x1": 145.2,
+    "y": -3.0
+   }
+  },
+  {
+   "i": 11,
+   "section": "rise",
+   "kind": "rise",
+   "policy": "tug",
+   "drop": -1.0,
+   "lip_x": 145.2,
+   "shelf_y": -3.0,
+   "beam": [
+    147.7,
+    -4.0
+   ],
+   "target": {
+    "x0": 150.5,
+    "x1": 158.5,
+    "y": -4.0
+   }
+  },
+  {
+   "i": 12,
+   "section": "rise",
+   "kind": "rise",
+   "policy": "tug",
+   "drop": -1.0,
+   "lip_x": 158.5,
+   "shelf_y": -4.0,
+   "beam": [
+    161.0,
+    -5.0
+   ],
+   "target": {
+    "x0": 163.8,
+    "x1": 171.8,
+    "y": -5.0
+   }
+  },
+  {
+   "i": 13,
+   "section": "mix",
+   "kind": "hold",
+   "policy": "tug",
+   "drop": 0.0,
+   "lip_x": 171.8,
+   "shelf_y": -5.0,
+   "beam": [
+    174.3,
+    -5.5
+   ],
+   "target": {
+    "x0": 177.2,
+    "x1": 185.2,
+    "y": -5.0
+   }
+  },
+  {
+   "i": 14,
+   "section": "mix",
+   "kind": "rise",
+   "policy": "tug",
+   "drop": -1.0,
+   "lip_x": 185.2,
+   "shelf_y": -5.0,
+   "beam": [
+    187.7,
+    -6.0
+   ],
+   "target": {
+    "x0": 190.5,
+    "x1": 198.5,
+    "y": -6.0
+   }
+  },
+  {
+   "i": 15,
+   "section": "mix",
+   "kind": "hold",
+   "policy": "tug",
+   "drop": 0.0,
+   "lip_x": 198.5,
+   "shelf_y": -6.0,
+   "beam": [
+    201.0,
+    -6.5
+   ],
+   "target": {
+    "x0": 203.9,
+    "x1": 211.9,
+    "y": -6.0
+   }
+  },
+  {
+   "i": 16,
+   "section": "mix",
+   "kind": "rise",
+   "policy": "tug",
+   "drop": -1.0,
+   "lip_x": 211.9,
+   "shelf_y": -6.0,
+   "beam": [
+    214.4,
+    -7.0
+   ],
+   "target": {
+    "x0": 217.2,
+    "x1": 225.2,
+    "y": -7.0
+   }
+  }
+ ],
+ "spawn": [
+  -4.0,
+  -0.5
+ ],
+ "goal": [
+  221.2,
+  -7.0
+ ],
+ "bottom": [
+  0.0,
+  7.0
+ ],
+ "checkpoints": [
+  {
+   "name": "C00_glide",
+   "x": -4.0,
+   "y": -0.5
+  },
+  {
+   "name": "C02_hold",
+   "x": 18.7,
+   "y": 2.5
+  },
+  {
+   "name": "C05_rise",
+   "x": 58.9,
+   "y": 2.5
+  },
+  {
+   "name": "C13_mix",
+   "x": 165.3,
+   "y": -5.5
+  }
+ ],
+ "flight": true
+}

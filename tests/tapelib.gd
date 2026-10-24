@@ -31,6 +31,28 @@ static func new_sim() -> Node2D:
 	m.setup_sim()
 	return m
 
+## The sim whose world has this fingerprint, or null: the traverse, the lab,
+## the crag, then each res://levels/<name>.tscn (not the _scratch ones).
+static func sim_for_fingerprint(fp: int) -> Node2D:
+	var names: Array[String] = ["", "lab", "crag"]
+	var d := DirAccess.open("res://levels")
+	if d != null:
+		var files := Array(d.get_files())
+		files.sort()
+		for f: String in files:
+			if f.ends_with(".tscn") and not f.begins_with("_"):
+				names.append(f.get_basename())
+	for n: String in names:
+		var m: Node2D = load("res://main.gd").new()
+		m.external_drive = true
+		m.level_id = n
+		m.setup_sim()
+		m.save_enabled = false
+		if m.level_fingerprint() == fp:
+			return m
+		m.free()
+	return null
+
 # ---------------------------------------------------------- the phase kinds --
 # still  hand parked on the body, open        gait  the lash gait, forward
 # hold   hand parked on the body, closed      back  the lash gait, backward
@@ -304,10 +326,15 @@ static func verify(path: String) -> Dictionary:
 		return out
 	var m := new_sim()
 	if int(t["lvl"]) != m.level_fingerprint():
+		# A tape names its level only by fingerprint, so look for the level
+		# it was recorded on: the lab, the crag, then every scene in levels/.
+		# (levels/demo.tape is the demo's recorded run, replayed on the demo.)
+		m.free()
+		m = sim_for_fingerprint(int(t["lvl"]))
+	if m == null:
 		# NOT a divergence: the tape's cursor no longer refers to anything, so
 		# it cannot be asked whether the sim still behaves. Its own message.
 		out["why"] = "recorded on a different level"
-		m.free()
 		return out
 	if not m.restore(t["start"]):
 		out["why"] = "start state refused - the sim's state layout changed " \
@@ -318,9 +345,17 @@ static func verify(path: String) -> Dictionary:
 	var cur: PackedVector2Array = t["cur"]
 	var grp: PackedByteArray = t["grip"]
 	var chk: PackedInt64Array = t["chk"]
+	var opts: PackedByteArray = t.get("opt", PackedByteArray())
 	var j := 0
 	for i in cur.size():
 		m.pending_reset = (grp[i] & 2) != 0
+		m.align_w = m.ALIGN_W_FLIP if (grp[i] & 4) != 0 else m.ALIGN_W
+		m.crack_speed = m.CRACK_SPEED_HI if (grp[i] & 32) != 0 else m.CRACK_SPEED
+		m.stick_on = (grp[i] & 64) != 0
+		m.hammer_on = (grp[i] & 128) != 0
+		m.firm_set(i < opts.size() and (opts[i] & 1) != 0)
+		m.stretch_set(i < opts.size() and (opts[i] & 2) != 0)
+		m.pending_jump = i < opts.size() and (opts[i] & 4) != 0
 		m.step_tick(cur[i], (grp[i] & 1) != 0)
 		if (i + 1) % int(m.TAPE_CHECK) == 0:
 			if j < chk.size() and int(m.rec_chk[j]) != int(chk[j]):

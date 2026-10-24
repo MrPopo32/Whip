@@ -1,0 +1,88 @@
+[gd_scene format=3 uid="uid://co18t5njl2kfl"]
+
+[ext_resource type="Script" uid="uid://bewo0n2mccmcv" path="res://levels/whip_level.gd" id="1_lvl"]
+[ext_resource type="Script" uid="uid://c8r6q8ra85go3" path="res://levels/whip_terrain.gd" id="2_ter"]
+[ext_resource type="Script" uid="uid://b0rqhytr3qo0g" path="res://levels/whip_anchor.gd" id="3_anc"]
+
+[node name="Level" type="Node2D" unique_id=530673433]
+script = ExtResource("1_lvl")
+hud = "THE WHIP - THE STEPS   (--level steps)   three drops, four anchors: a beam, a jam, a knob, a thin beam
+SPACE / LMB = CLOSE YOUR HAND on the rope. A wrap only takes in the moment you close it,
+and only holds while you hold. OPEN your hand and you leave the anchor that instant.
+Green ring = it holds. Amber = it betrays."
+
+[node name="Ground" type="Line2D" parent="." unique_id=1934679143]
+position = Vector2(40.442436, 124.64732)
+scale = Vector2(1.0722347, 1.2797006)
+points = PackedVector2Array(-717, -504, -720, 0, 360, 0, 360, 180, 666.729, 180, 840, 180, 840, 360, 1198.9246, 360, 1320, 360, 1320, 540, 1652, 553, 1916, 547, 1920, 540, 1926, 378, 1920, 180)
+width = 6.0
+default_color = Color(0.32, 0.35, 0.42, 1)
+script = ExtResource("2_ter")
+
+[node name="Islands" type="Node2D" parent="." unique_id=290283393]
+
+[node name="A2_lump" type="Line2D" parent="Islands" unique_id=586056207]
+points = PackedVector2Array(900, 92.4, 948, 92.4, 948, 128.4, 900, 128.4)
+closed = true
+width = 6.0
+default_color = Color(0.32, 0.35, 0.42, 1)
+script = ExtResource("2_ter")
+
+[node name="Anchors" type="Node2D" parent="." unique_id=1054580815]
+
+[node name="A0_BEAM" type="Marker2D" parent="Anchors" unique_id=1763743343]
+position = Vector2(-120, -132)
+gizmo_extents = 13.2
+script = ExtResource("3_anc")
+radius = 0.22
+caption = "BEAM"
+
+[node name="A1_JAM" type="Marker2D" parent="Anchors" unique_id=1734213662]
+position = Vector2(444, -132)
+gizmo_extents = 6.6
+script = ExtResource("3_anc")
+radius = 0.11
+jam = true
+caption = "JAM"
+
+[node name="A2_KNOB" type="Marker2D" parent="Anchors" unique_id=881544564]
+position = Vector2(924, 48)
+gizmo_extents = 8.4
+script = ExtResource("3_anc")
+radius = 0.14
+caption = "KNOB"
+
+[node name="A3_THIN_BEAM" type="Marker2D" parent="Anchors" unique_id=1300258512]
+position = Vector2(1404, 228)
+gizmo_extents = 6.6
+script = ExtResource("3_anc")
+radius = 0.11
+caption = "THIN BEAM"
+
+[node name="Marker2D" type="Marker2D" parent="Anchors" unique_id=1093416230]
+
+[node name="Spawn" type="Marker2D" parent="." unique_id=1532983052]
+position = Vector2(-390, -60)
+
+[node name="Goal" type="Marker2D" parent="." unique_id=407946243]
+position = Vector2(1680, 540)
+
+[node name="Backdrop" type="Node2D" parent="." unique_id=954437210]
+
+[node name="far_cliff" type="Polygon2D" parent="Backdrop" unique_id=1594679475]
+position = Vector2(3504, -2658)
+color = Color(0.125, 0.135, 0.17, 1)
+polygon = PackedVector2Array(-2400, -840, -600, -660, 0, -540, 600, -420, 909, -299, 1200, -240, 1800, -60, 2108, -48, 3600, 60, 3600, 2400, -2400, 2400)
+
+[node name="A2_pillar" type="Polygon2D" parent="Backdrop" unique_id=397325300]
+color = Color(0.155, 0.17, 0.215, 1)
+polygon = PackedVector2Array(897, 120, 951, 120, 978, 360, 870, 360)
+
+[node name="near_rock" type="Polygon2D" parent="Backdrop" unique_id=500433485]
+position = Vector2(-5472, -2676)
+color = Color(0.19, 0.205, 0.25, 1)
+polygon = PackedVector2Array(-2400, -480, -720, -480, -720, 0, 360, 0, 360, 180, 840, 180, 840, 360, 1320, 360, 1320, 540, 1920, 540, 1920, 180, 3600, 180, 3576, 2412, -2400, 2400)
+
+[node name="A2_lump_fill" type="Polygon2D" parent="Backdrop" unique_id=865378262]
+color = Color(0.19, 0.205, 0.25, 1)
+polygon = PackedVector2Array(900, 92.4, 948, 92.4, 948, 128.4, 900, 128.4)
